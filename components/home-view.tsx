@@ -3,7 +3,7 @@
 import React from "react";
 import { Card, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { FileText, ArrowRight, AlertCircle, CheckCircle, Upload, Plus, X, Wrench, Loader2, Download, Sparkles, Package, FolderOpen, CheckSquare, Square, Trash2, FileSpreadsheet } from "lucide-react";
+import { FileText, ArrowRight, AlertCircle, CheckCircle, Upload, Plus, X, Wrench, Loader2, Download, Sparkles, Package, FolderOpen, CheckSquare, Square, Trash2, FileSpreadsheet, Copy, FileJson, RotateCcw, Clock } from "lucide-react";
 import { Search, Filter } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -27,16 +27,31 @@ interface HomeViewProps {
   onDelete: (index: number) => void;
   onFix?: (index: number) => void;
   fixingIndex?: number | null;
-  onDownload?: (index: number) => void;
+  onDownload?: (index: number, format?: "aasx" | "json") => void;
   onGenerateReport?: (index: number) => void;
+  onDuplicate?: (index: number) => void;
+  recentFiles?: number[];
+  searchInputRef?: React.RefObject<HTMLInputElement | null>;
 }
 
-export default function HomeView({ files, onOpen, onUploadClick, onCreateClick, onReorder, onDelete, onFix, fixingIndex, onDownload, onGenerateReport }: HomeViewProps) {
+export default function HomeView({ files, onOpen, onUploadClick, onCreateClick, onReorder, onDelete, onFix, fixingIndex, onDownload, onGenerateReport, onDuplicate, recentFiles = [], searchInputRef }: HomeViewProps) {
   const [dragIndex, setDragIndex] = React.useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = React.useState<number | null>(null);
   const [searchQuery, setSearchQuery] = React.useState<string>("");
   const [selectedSubmodels, setSelectedSubmodels] = React.useState<Set<string>>(new Set());
   const [validityFilter, setValidityFilter] = React.useState<"all" | "valid" | "invalid">("all");
+  const localSearchRef = React.useRef<HTMLInputElement>(null);
+  const effectiveSearchRef = searchInputRef || localSearchRef;
+
+  // Check if any filters are active
+  const hasActiveFilters = searchQuery.trim() !== "" || selectedSubmodels.size > 0 || validityFilter !== "all";
+
+  // Clear all filters
+  const clearAllFilters = () => {
+    setSearchQuery("");
+    setSelectedSubmodels(new Set());
+    setValidityFilter("all");
+  };
 
   // Batch selection state
   const [selectedFiles, setSelectedFiles] = React.useState<Set<number>>(new Set());
@@ -185,39 +200,42 @@ export default function HomeView({ files, onOpen, onUploadClick, onCreateClick, 
             <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full -translate-y-32 translate-x-32 blur-3xl" />
             <div className="absolute bottom-0 left-0 w-48 h-48 bg-white/10 rounded-full translate-y-24 -translate-x-24 blur-2xl" />
 
-            <div className="relative z-10">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="p-2 bg-white/20 backdrop-blur-sm rounded-xl">
-                  <Package className="w-6 h-6 text-white" />
+            <div className="relative z-10 flex items-center justify-between gap-8">
+              <div className="flex-1">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="p-2 bg-white/20 backdrop-blur-sm rounded-xl">
+                    <Package className="w-6 h-6 text-white" />
+                  </div>
+                  <span className="text-white/80 text-sm font-medium tracking-wide uppercase">Asset Administration Shell</span>
                 </div>
-                <span className="text-white/80 text-sm font-medium tracking-wide uppercase">Asset Administration Shell</span>
-              </div>
-              <h1 className="text-3xl md:text-4xl font-bold text-white mb-2">
-                Your AAS Models
-              </h1>
-              <p className="text-white/80 text-lg max-w-2xl">
-                {files.length > 0
-                  ? `Managing ${files.length} model${files.length !== 1 ? 's' : ''} • ${filteredFiles.length} visible`
-                  : "Upload or create your first Asset Administration Shell to get started"}
-              </p>
-            </div>
+                <h1 className="text-3xl md:text-4xl font-bold text-white mb-2">
+                  Your AAS Models
+                </h1>
+                <p className="text-white/80 text-lg max-w-2xl">
+                  {files.length > 0
+                    ? `Managing ${files.length} model${files.length !== 1 ? 's' : ''} • ${filteredFiles.length} visible`
+                    : "Upload or create your first Asset Administration Shell to get started"}
+                </p>
 
-            {/* Action Buttons */}
-            <div className="relative z-10 flex flex-wrap gap-3 mt-6">
-              <Button
-                onClick={onUploadClick}
-                className="bg-white/20 backdrop-blur-sm text-white border border-white/30 hover:bg-white/30 shadow-lg transition-all duration-200 gap-2"
-              >
-                <Upload className="w-4 h-4" />
-                Upload AAS
-              </Button>
-              <Button
-                onClick={onCreateClick}
-                className="bg-white text-[#61caf3] hover:bg-white/90 shadow-lg shadow-black/10 transition-all duration-200 gap-2"
-              >
-                <Sparkles className="w-4 h-4" />
-                Create New AAS
-              </Button>
+                {/* Action Buttons */}
+                <div className="flex flex-wrap gap-3 mt-6">
+                  <Button
+                    onClick={onUploadClick}
+                    className="bg-white/20 backdrop-blur-sm text-white border border-white/30 hover:bg-white/30 shadow-lg transition-all duration-200 gap-2"
+                  >
+                    <Upload className="w-4 h-4" />
+                    Upload AAS
+                  </Button>
+                  <Button
+                    onClick={onCreateClick}
+                    className="bg-white text-[#61caf3] hover:bg-white/90 shadow-lg shadow-black/10 transition-all duration-200 gap-2"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    Create New AAS
+                  </Button>
+                </div>
+              </div>
+
             </div>
           </div>
         </div>
@@ -232,9 +250,10 @@ export default function HomeView({ files, onOpen, onUploadClick, onCreateClick, 
                   <div className="relative flex-1 max-w-md">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                     <Input
+                      ref={effectiveSearchRef}
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search by name or file..."
+                      placeholder="Search by name or file... (Ctrl+F)"
                       className="pl-10 bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700 focus:ring-2 focus:ring-[#61caf3] focus:border-transparent"
                       aria-label="Search models"
                     />
@@ -307,6 +326,18 @@ export default function HomeView({ files, onOpen, onUploadClick, onCreateClick, 
                       <SelectItem value="invalid">Invalid</SelectItem>
                     </SelectContent>
                   </Select>
+                  {/* Clear All Filters Button */}
+                  {hasActiveFilters && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={clearAllFilters}
+                      className="text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 gap-1.5"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      Clear filters
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>
@@ -362,6 +393,39 @@ export default function HomeView({ files, onOpen, onUploadClick, onCreateClick, 
               </div>
             </div>
           </div>
+
+          {/* Recent Files Section */}
+          {recentFiles.length > 0 && (
+            <div className="mb-6">
+              <div className="flex items-center gap-2 mb-3">
+                <Clock className="w-4 h-4 text-gray-400" />
+                <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Recently Opened</span>
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-2">
+                {recentFiles.slice(0, 5).map((fileIndex) => {
+                  const file = files[fileIndex];
+                  if (!file) return null;
+                  const idShort = getIdShort(file);
+                  return (
+                    <button
+                      key={`recent-${fileIndex}`}
+                      onClick={() => onOpen(fileIndex)}
+                      className="flex items-center gap-2 px-3 py-2 bg-white/70 dark:bg-gray-800/70 rounded-lg border border-gray-200/50 dark:border-gray-700/50 hover:border-[#61caf3]/50 hover:shadow-sm transition-all duration-200 whitespace-nowrap"
+                    >
+                      <FileText className="w-4 h-4 text-[#61caf3]" />
+                      <span className="text-sm text-gray-700 dark:text-gray-300 max-w-[150px] truncate">{idShort}</span>
+                      {file.valid === true && (
+                        <CheckCircle className="w-3 h-3 text-emerald-500" />
+                      )}
+                      {file.valid === false && (
+                        <AlertCircle className="w-3 h-3 text-red-500" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Batch Action Bar */}
           {selectedFiles.size > 0 && (
@@ -642,19 +706,57 @@ export default function HomeView({ files, onOpen, onUploadClick, onCreateClick, 
                             )}
                           </Button>
                         )}
-                        {file.valid === true && onDownload && (
+                        {file.valid === true && onDuplicate && (
                           <Button
                             size="sm"
                             variant="outline"
-                            className="border-[#61caf3] text-[#61caf3] hover:bg-[#61caf3]/10 hover:border-[#4db6e6] transition-colors text-xs h-7 px-2"
+                            className="border-gray-300 text-gray-600 hover:bg-gray-50 hover:border-gray-400 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-800 transition-colors text-xs h-7 px-2"
                             onClick={(e) => {
                               e.stopPropagation();
-                              onDownload(actualIndex);
+                              onDuplicate(actualIndex);
                             }}
+                            title="Duplicate model"
                           >
-                            <Download className="mr-1 w-3 h-3" />
-                            Download
+                            <Copy className="w-3 h-3" />
                           </Button>
+                        )}
+                        {file.valid === true && onDownload && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="border-[#61caf3] text-[#61caf3] hover:bg-[#61caf3]/10 hover:border-[#4db6e6] transition-colors text-xs h-7 px-2"
+                              >
+                                <Download className="mr-1 w-3 h-3" />
+                                Export
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                              <DropdownMenuLabel className="text-xs">Export format</DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <button
+                                className="relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-gray-100 dark:hover:bg-gray-800"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDownload(actualIndex, "aasx");
+                                }}
+                              >
+                                <Package className="mr-2 w-4 h-4 text-[#61caf3]" />
+                                AASX Package
+                              </button>
+                              <button
+                                className="relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-gray-100 dark:hover:bg-gray-800"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDownload(actualIndex, "json");
+                                }}
+                              >
+                                <FileJson className="mr-2 w-4 h-4 text-amber-500" />
+                                JSON Format
+                              </button>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         )}
                         {file.valid === true && onGenerateReport && (
                           <Button

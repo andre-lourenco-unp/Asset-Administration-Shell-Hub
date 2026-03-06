@@ -28,14 +28,12 @@ export async function POST(request: Request | NextRequest) {
   });
 
   try {
+    const dataStream = await client.getObject(bucket, key);
     const buffer: Buffer = await new Promise((resolve, reject) => {
-      client.getObject(bucket, key, (err, dataStream) => {
-        if (err) return reject(err);
-        const chunks: Buffer[] = [];
-        dataStream.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-        dataStream.on("error", reject);
-        dataStream.on("end", () => resolve(Buffer.concat(chunks)));
-      });
+      const chunks: Buffer[] = [];
+      dataStream.on("data", (chunk: any) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      dataStream.on("error", reject);
+      dataStream.on("end", () => resolve(Buffer.concat(chunks)));
     });
 
     const base64 = buffer.toString("base64");

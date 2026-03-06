@@ -107,9 +107,9 @@ export default function MinioSendDialog({ open, onOpenChange, files, originals =
       // Find original content for this item
       const original = originals[it.name] || originals[it.key];
 
-      // fallback to locally captured originalBase64 (primarily for AASX)
-      const fallbackBase64 = it.ref?.originalBase64;
-      const fallbackContentType = it.ref?.originalContentType || (it.name?.toLowerCase().endsWith(".aasx") ? "application/zip" : "application/octet-stream");
+      // fallback to locally captured originalAasxBase64 (primarily for AASX)
+      const fallbackBase64 = it.ref?.originalAasxBase64;
+      const fallbackContentType = it.name?.toLowerCase().endsWith(".aasx") ? "application/zip" : "application/octet-stream";
 
       if (!original && !fallbackBase64) {
         failed += 1;

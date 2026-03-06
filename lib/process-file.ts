@@ -2,7 +2,6 @@ import type { ValidationResult, ValidationError } from "./types"
 import JSZip from "jszip"
 import { validateAASXXml } from "./xml-validator"
 import { validateAASXJson } from "./json-validator" // Import validateAASXJson
-import type { File } from "formdata-node"
 
 // ADD: simple mime resolver by extension
 function getMimeTypeFromExt(ext: string): string {
@@ -291,7 +290,7 @@ async function validateJSON(jsonContent: string, fileName: string): Promise<Vali
       errors: result.valid ? undefined : result.errors,
       processingTime: Date.now() - startTime,
       parsed: result.parsed,
-      aasData: result.aasData,
+      aasData: (result as any).aasData,
     }
   } catch (error) {
     return {

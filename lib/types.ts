@@ -1,5 +1,3 @@
-import type { File } from "formdata-node"
-
 // General validation error structure
 export interface ValidationError {
   path: string
@@ -11,7 +9,7 @@ export interface ValidationResult {
   file: string
   type: "XML" | "JSON" | "AASX"
   valid: boolean
-  errors?: string[] | ValidationError[]
+  errors?: (string | ValidationError)[]
   processingTime: number
   parsed?: any
   thumbnail?: string

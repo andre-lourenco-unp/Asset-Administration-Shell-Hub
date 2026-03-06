@@ -5,6 +5,7 @@ import { Plus, Loader2, X, AlertCircle, Pencil, Check, Sparkles, ArrowRight, Pac
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
+import { fetchTemplates, isRateLimited, rateLimitResetSeconds } from "@/lib/github-templates"
 
 interface SubmodelTemplate {
   name: string
@@ -34,10 +35,6 @@ function isValidUri(value: string): boolean {
   return /^(https?:\/\/|urn:|file:\/\/)/i.test(value.trim())
 }
 
-// Cache for GitHub API templates (persists across dialog opens during session)
-let cachedTemplates: SubmodelTemplate[] | null = null
-let cacheTimestamp: number = 0
-const CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
 
 export function AASCreator({ onProceedToEditor, onClose }: { onProceedToEditor: (config: any) => void, onClose?: () => void }) {
   const [templates, setTemplates] = useState<SubmodelTemplate[]>([])
@@ -56,102 +53,32 @@ export function AASCreator({ onProceedToEditor, onClose }: { onProceedToEditor: 
   const [editingIdShortValue, setEditingIdShortValue] = useState("")
 
   useEffect(() => {
-    fetchSubmodelTemplates()
+    loadTemplates()
   }, [])
 
-  const fetchSubmodelTemplates = async () => {
-    // Check cache first
-    const now = Date.now()
-    if (cachedTemplates && (now - cacheTimestamp) < CACHE_DURATION) {
-      console.log("[AAS Creator] Using cached templates")
-      setTemplates(cachedTemplates)
-      setLoading(false)
-      return
-    }
-
+  const loadTemplates = async () => {
     try {
       setLoading(true)
       setApiError(null)
-      console.log("[AAS Creator] Fetching submodel templates from GitHub API...")
 
-      const response = await fetch(
-        "https://api.github.com/repos/admin-shell-io/submodel-templates/contents/published"
-      )
+      const { templates: fetched, rateLimited } = await fetchTemplates()
 
-      if (!response.ok) {
-        throw new Error(`GitHub API error: ${response.status}`)
+      if (rateLimited && fetched.length === 0) {
+        const secs = rateLimitResetSeconds()
+        setApiError(
+          `GitHub API rate limit reached. Please wait ${secs > 60 ? `${Math.ceil(secs / 60)} minutes` : `${secs} seconds`} and try again.`
+        )
+        return
       }
 
-      const data = await response.json()
-      console.log("[AAS Creator] GitHub API returned", data.length, "items")
+      if (rateLimited && fetched.length > 0) {
+        toast.info("Using cached templates — GitHub API rate limit reached")
+      }
 
-      // Filter for directories only (submodel templates)
-      const templateDirs = data.filter((item: any) => item.type === "dir")
-      console.log("[AAS Creator] Found", templateDirs.length, "template directories")
-
-      // Map to template objects
-      const fetchedTemplates: SubmodelTemplate[] = templateDirs.map((dir: any) => {
-        // Clean up the name for display
-        const cleanName = dir.name
-          .replace(/_/g, " ")
-          .replace(/([a-z])([A-Z])/g, "$1 $2")
-          .trim()
-
-        return {
-          name: cleanName,
-          version: "1.0",
-          description: `IDTA submodel template for ${cleanName}`,
-          url: `https://github.com/admin-shell-io/submodel-templates/tree/main/published/${dir.name}`
-        }
-      })
-
-      console.log("[AAS Creator] Loaded", fetchedTemplates.length, "templates")
-
-      // Update cache
-      cachedTemplates = fetchedTemplates
-      cacheTimestamp = now
-
-      setTemplates(fetchedTemplates)
-
+      setTemplates(fetched)
     } catch (error) {
-      console.error("[AAS Creator] Error fetching submodel templates:", error)
-      setApiError("Could not load templates from GitHub. Showing default templates.")
-
-      // Fallback to mock templates if API fails
-      const mockTemplates: SubmodelTemplate[] = [
-        {
-          name: "ContactInformation",
-          version: "1.0",
-          description: "Contact information for the asset",
-          url: "https://github.com/admin-shell-io/submodel-templates/tree/main/published/Contact_Information"
-        },
-        {
-          name: "DigitalNameplate",
-          version: "2.0",
-          description: "Digital nameplate information",
-          url: "https://github.com/admin-shell-io/submodel-templates/tree/main/published/Digital_Nameplate"
-        },
-        {
-          name: "TechnicalData",
-          version: "1.2",
-          description: "Technical specifications and data",
-          url: "https://github.com/admin-shell-io/submodel-templates/tree/main/published/Technical_Data"
-        },
-        {
-          name: "Handover Documentation",
-          version: "1.1",
-          description: "Documentation for asset handover",
-          url: "https://github.com/admin-shell-io/submodel-templates/tree/main/published/Handover_Documentation"
-        },
-        {
-          name: "Carbon Footprint",
-          version: "1.0",
-          description: "Product carbon footprint information",
-          url: "https://github.com/admin-shell-io/submodel-templates/tree/main/published/Carbon_Footprint"
-        }
-      ]
-
-      setTemplates(mockTemplates)
+      console.error("Error loading templates:", error)
+      setApiError("Could not load templates from GitHub.")
     } finally {
       setLoading(false)
     }

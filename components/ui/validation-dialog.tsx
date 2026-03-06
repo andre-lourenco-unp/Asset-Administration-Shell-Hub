@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { AlertCircle, AlertTriangle, Info, CheckCircle, Wrench, ChevronDown, ExternalLink } from "lucide-react"
+import { AlertCircle, AlertTriangle, Info, CheckCircle, Wrench, ChevronDown, ExternalLink, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { AlertType, ValidationAlert, ALERT_COLORS, countAlertsByType, groupAlertsByPath, countFixableAlerts } from "@/lib/validation-types"
 import { Button } from "@/components/ui/button"
@@ -50,7 +50,12 @@ export function ValidationDialog({
             {title}
           </DialogTitle>
           <DialogDescription>
-            {isValid ? (
+            {isFixing ? (
+              <span className="flex items-center gap-2 text-[#61caf3]">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Applying fixes to your model...
+              </span>
+            ) : isValid ? (
               "Your model passes all validation checks and is ready for export."
             ) : (
               `Found ${counts.total} issue${counts.total !== 1 ? 's' : ''} that need${counts.total === 1 ? 's' : ''} attention.`
@@ -88,7 +93,15 @@ export function ValidationDialog({
 
         {/* Alert sections */}
         {!isValid && (
-          <div className="flex-1 min-h-0 overflow-hidden">
+          <div className={cn("flex-1 min-h-0 overflow-hidden relative", isFixing && "opacity-50 pointer-events-none")}>
+            {isFixing && (
+              <div className="absolute inset-0 flex items-center justify-center bg-white/50 dark:bg-gray-900/50 z-10 rounded-lg">
+                <div className="flex flex-col items-center gap-2">
+                  <Loader2 className="w-8 h-8 animate-spin text-[#61caf3]" />
+                  <span className="text-sm font-medium text-[#61caf3]">Applying fixes...</span>
+                </div>
+              </div>
+            )}
             <ScrollArea className="h-full max-h-[400px]">
               <div className="space-y-4 pr-4">
               {/* Errors section */}
@@ -147,10 +160,19 @@ export function ValidationDialog({
               <Button
                 onClick={onFix}
                 disabled={isFixing}
-                className="bg-[#61caf3] hover:bg-[#4db6e6] text-white gap-2"
+                className="bg-[#61caf3] hover:bg-[#4db6e6] text-white gap-2 min-w-[140px]"
               >
-                <Wrench className="w-4 h-4" />
-                {isFixing ? "Fixing..." : "Auto-Fix Issues"}
+                {isFixing ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Fixing Issues...
+                  </>
+                ) : (
+                  <>
+                    <Wrench className="w-4 h-4" />
+                    Fix Issues
+                  </>
+                )}
               </Button>
             )}
           </div>

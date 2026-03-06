@@ -297,7 +297,7 @@
 
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { Upload, Plus, HomeIcon, Sparkles, Moon, Sun, Monitor } from 'lucide-react'
 import { useTheme } from "next-themes"
 import { AASXVisualizer } from "@/components/aasx-visualizer"
@@ -312,6 +312,7 @@ import { toast } from "sonner"
 import JSZip from "jszip"
 import { saveModels, loadModels, clearModels } from "@/lib/storage"
 import { downloadValidationReport } from "@/lib/pdf-report"
+import { ErrorBoundary } from "@/components/error-boundary"
 
 type ViewMode = "home" | "upload" | "visualizer" | "creator" | "editor"
 
@@ -325,7 +326,9 @@ export default function VisualizerPage() {
   const [fixingIndex, setFixingIndex] = useState<number | null>(null)
   const [mounted, setMounted] = useState(false)
   const [storageLoaded, setStorageLoaded] = useState(false)
+  const [recentFiles, setRecentFiles] = useState<number[]>([])
   const { theme, setTheme, resolvedTheme } = useTheme()
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   // Load models from IndexedDB on mount
   useEffect(() => {
@@ -368,6 +371,42 @@ export default function VisualizerPage() {
   // Prevent hydration mismatch
   useEffect(() => {
     setMounted(true)
+  }, [])
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+F or Cmd+F - Focus search
+      if ((e.ctrlKey || e.metaKey) && e.key === "f" && viewMode === "home") {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+      }
+      // Ctrl+U or Cmd+U - Upload
+      if ((e.ctrlKey || e.metaKey) && e.key === "u") {
+        e.preventDefault()
+        setViewMode("upload")
+      }
+      // Ctrl+N or Cmd+N - Create new
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+        e.preventDefault()
+        setViewMode("creator")
+      }
+      // Escape - Go home
+      if (e.key === "Escape" && viewMode !== "home") {
+        setViewMode("home")
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [viewMode])
+
+  // Track recent files when opening
+  const trackRecentFile = useCallback((index: number) => {
+    setRecentFiles(prev => {
+      const filtered = prev.filter(i => i !== index)
+      return [index, ...filtered].slice(0, 5) // Keep last 5
+    })
   }, [])
 
   // Cycle through themes: light -> dark -> system
@@ -551,10 +590,10 @@ export default function VisualizerPage() {
     }
   }
 
-  const handleDownload = async (index: number) => {
+  const handleDownload = async (index: number, format: "aasx" | "json" = "aasx") => {
     const file = uploadedFiles[index]
-    if (!file || !file.originalXml) {
-      toast.error("No XML data available to download")
+    if (!file) {
+      toast.error("File not found")
       return
     }
 
@@ -562,6 +601,42 @@ export default function VisualizerPage() {
     const idShort = file.aasData?.assetAdministrationShells?.[0]?.idShort ||
                     file.parsed?.assetAdministrationShells?.[0]?.idShort ||
                     "aas"
+
+    // JSON Export
+    if (format === "json") {
+      const aasData = file.aasData || file.parsed
+      if (!aasData) {
+        toast.error("No AAS data available to export")
+        return
+      }
+
+      // Create AAS 3.1 JSON structure
+      const jsonExport = {
+        assetAdministrationShells: aasData.assetAdministrationShells || [],
+        submodels: aasData.submodels || [],
+        conceptDescriptions: aasData.conceptDescriptions || [],
+      }
+
+      const filename = `${idShort}.json`
+      const blob = new Blob([JSON.stringify(jsonExport, null, 2)], { type: "application/json" })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+
+      toast.success(`Exported ${filename}`)
+      return
+    }
+
+    // AASX Export
+    if (!file.originalXml) {
+      toast.error("No XML data available to download")
+      return
+    }
 
     // If we have the original AASX, recreate it with fixed XML
     if (file.originalAasxBase64 && file.aasxXmlPath) {
@@ -616,6 +691,29 @@ export default function VisualizerPage() {
     }
   }
 
+  // Duplicate a model
+  const handleDuplicate = (index: number) => {
+    const file = uploadedFiles[index]
+    if (!file) {
+      toast.error("File not found")
+      return
+    }
+
+    const idShort = file.aasData?.assetAdministrationShells?.[0]?.idShort ||
+                    file.parsed?.assetAdministrationShells?.[0]?.idShort ||
+                    "AAS"
+
+    // Deep clone the file
+    const duplicated: ValidationResult = JSON.parse(JSON.stringify(file))
+
+    // Update the filename to indicate it's a copy
+    duplicated.file = `${idShort}_copy.${file.type === "AASX" ? "aasx" : file.type?.toLowerCase() || "xml"}`
+
+    // Add to the list
+    setUploadedFiles(prev => [...prev, duplicated])
+    toast.success(`Duplicated "${idShort}" as "${duplicated.file}"`)
+  }
+
   const handleGenerateReport = async (index: number) => {
     const file = uploadedFiles[index]
     if (!file) {
@@ -644,6 +742,8 @@ export default function VisualizerPage() {
     if (!env || !Array.isArray(env.assetAdministrationShells) || !env.assetAdministrationShells[0]) {
       return
     }
+    // Track as recently opened
+    trackRecentFile(index)
     const shell = env.assetAdministrationShells[0]
     const submodels = Array.isArray(env.submodels) ? env.submodels : []
     const selectedSubmodels = submodels.map((sm: any) => ({
@@ -737,8 +837,9 @@ export default function VisualizerPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50/30 to-sky-50/50 dark:from-gray-900 dark:via-gray-900 dark:to-gray-800">
-      {/* Modern Header */}
+    <ErrorBoundary>
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50/30 to-sky-50/50 dark:from-gray-900 dark:via-gray-900 dark:to-gray-800">
+        {/* Modern Header */}
       <div className="sticky top-0 z-50 backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-b border-gray-200/50 dark:border-gray-700/50 shadow-sm">
         <div className="flex items-center justify-between px-6 py-3">
           <button
@@ -791,6 +892,9 @@ export default function VisualizerPage() {
             fixingIndex={fixingIndex}
             onDownload={handleDownload}
             onGenerateReport={handleGenerateReport}
+            onDuplicate={handleDuplicate}
+            recentFiles={recentFiles}
+            searchInputRef={searchInputRef}
           />
         )}
         {viewMode === "upload" && (
@@ -806,9 +910,10 @@ export default function VisualizerPage() {
           />
         )}
         {viewMode === "editor" && currentAASConfig && (
-          <AASEditor 
-            aasConfig={currentAASConfig} 
-            onBack={() => setViewMode("home")} 
+          <AASEditor
+            key={editorFileIndex ?? "new"}
+            aasConfig={currentAASConfig}
+            onBack={() => setViewMode("home")}
             onFileGenerated={handleFileGenerated}
             onUpdateAASConfig={updateAASConfig}
             initialSubmodelData={initialSubmodelData || undefined}
@@ -819,6 +924,7 @@ export default function VisualizerPage() {
           />
         )}
       </div>
-    </div>
+      </div>
+    </ErrorBoundary>
   )
 }

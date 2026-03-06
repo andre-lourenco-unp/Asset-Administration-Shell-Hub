@@ -35,6 +35,7 @@ import { useUnsavedChanges } from "@/hooks/use-unsaved-changes"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { fetchTemplates, fetchTemplateJson, isRateLimited, rateLimitResetSeconds } from "@/lib/github-templates"
 
 // Add IEC 61360 data types list
 const IEC_DATA_TYPES = [
@@ -250,8 +251,8 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
   const [loadingTemplates, setLoadingTemplates] = useState(false)
   const [validationErrors, setValidationErrors] = useState<Set<string>>(new Set())
   const [thumbnail, setThumbnail] = useState<string | null>(initialThumbnail || null)
-// ADD: initialize editMode to control AAS info and right panel editing
-  const [editMode, setEditMode] = useState(false)
+// Edit mode always on — right panel and AAS fields are always editable
+  const editMode = true
   const [templateSearchQuery, setSearchQuery] = useState("")
   const [draggedItem, setDraggedItem] = useState<{ path: string[]; element: SubmodelElement } | null>(null)
   const [dragOverItem, setDragOverItem] = useState<string | null>(null)
@@ -311,9 +312,42 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
     { warningMessage: "You have unsaved changes. Are you sure you want to leave?" }
   );
 
+  // Sync sourceXml prop to originalXml state when prop changes
+  useEffect(() => {
+    if (sourceXml && sourceXml.trim().length > 0) {
+      setOriginalXml(sourceXml);
+    }
+  }, [sourceXml]);
+
+  // On mount: fetch real template structures for submodels that were initialized with the fallback
+  // (i.e., when coming from the Creator wizard, which doesn't pass initialSubmodelData)
+  useEffect(() => {
+    const submodelsNeedingFetch = aasConfig.selectedSubmodels.filter(
+      sm => !initialSubmodelData?.[sm.idShort]
+    )
+    if (submodelsNeedingFetch.length === 0) return
+
+    const fetchAll = async () => {
+      for (const sm of submodelsNeedingFetch) {
+        const fetched = await fetchTemplateDetails(sm.template.name)
+        if (fetched) {
+          setSubmodelData(prev => ({
+            ...prev,
+            [sm.idShort]: fetched,
+          }))
+        }
+      }
+    }
+    fetchAll()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // NEW: Tree search and navigation
+  // treeSearchQuery is the debounced value used for filtering (avoids re-rendering the tree on every keystroke)
   const [treeSearchQuery, setTreeSearchQuery] = useState("");
+  const [treeSearchInput, setTreeSearchInput] = useState("");
   const [treeSearchFocused, setTreeSearchFocused] = useState(false);
+  const treeSearchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Breadcrumb path for selected element
   const [selectedElementPath, setSelectedElementPath] = useState<string[]>([]);
@@ -542,7 +576,7 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
     }
     // Build blob URLs for preview
     const entries = pdfs.map((p) => {
-      const blob = new Blob([p.bytes], { type: "application/pdf" })
+      const blob = new Blob([p.bytes as BlobPart], { type: "application/pdf" })
       const url = URL.createObjectURL(blob)
       return { name: p.name, bytes: p.bytes, url }
     })
@@ -607,30 +641,23 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
 
   const loadTemplates = async () => {
     if (availableTemplates.length > 0) return
-    
+
     setLoadingTemplates(true)
     try {
-      const response = await fetch(
-        "https://api.github.com/repos/admin-shell-io/submodel-templates/contents/published"
-      )
-      
-      if (!response.ok) {
-        throw new Error(`GitHub API error: ${response.status}`)
+      const { templates, jsonUrls, rateLimited } = await fetchTemplates()
+
+      if (rateLimited && templates.length === 0) {
+        const secs = rateLimitResetSeconds()
+        toast.error(
+          `GitHub API rate limit reached. Please wait ${secs > 60 ? `${Math.ceil(secs / 60)} min` : `${secs}s`} and try again.`
+        )
+        return
+      }
+      if (rateLimited) {
+        toast.info("Using cached templates — GitHub API rate limit reached")
       }
 
-      const data = await response.json()
-      
-      if (Array.isArray(data)) {
-        const templates = data
-          .filter((item: any) => item.type === "dir")
-          .map((item: any) => ({
-            name: item.name,
-            version: "1.0",
-            description: `IDTA ${item.name} submodel template`,
-            url: item.html_url,
-          }))
-        setAvailableTemplates(templates)
-      }
+      setAvailableTemplates(templates)
     } catch (error) {
       console.error("Failed to load templates:", error)
     } finally {
@@ -638,30 +665,15 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
     }
   }
 
-  const fetchTemplateDetails = async (templateName: string, version: string = "1/0"): Promise<SubmodelElement[] | null> => {
+  const fetchTemplateDetails = async (templateName: string): Promise<SubmodelElement[] | null> => {
     try {
-      // Try to fetch the JSON template file
-      const jsonUrl = `https://raw.githubusercontent.com/admin-shell-io/submodel-templates/main/published/${encodeURIComponent(templateName)}/${version}/${encodeURIComponent(templateName)}.json`
-      
-      console.log("[v0] Fetching template from:", jsonUrl)
-      const response = await fetch(jsonUrl)
-      
-      if (!response.ok) {
-        console.log("[v0] Template JSON not found, using default structure")
-        return null
+      const rawElements = await fetchTemplateJson(templateName)
+      if (rawElements) {
+        return parseSubmodelElements(rawElements)
       }
-      
-      const templateData = await response.json()
-      console.log("[v0] Template data received:", templateData)
-      
-      // Parse the template structure
-      if (templateData.submodelElements) {
-        return parseSubmodelElements(templateData.submodelElements)
-      }
-      
       return null
     } catch (error) {
-      console.error("[v0] Error fetching template details:", error)
+      console.error("Error fetching template details:", error)
       return null
     }
   }
@@ -669,12 +681,12 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
   const parseSubmodelElements = (elements: any[]): SubmodelElement[] => {
     return elements.map(el => {
       const embeddedDataSpec = el.embeddedDataSpecifications?.[0]?.dataSpecificationContent
-      
+
       const element: SubmodelElement = {
         idShort: el.idShort || "UnknownElement",
         modelType: el.modelType || "Property",
         valueType: el.valueType,
-        value: el.modelType === "MultiLanguageProperty" ? { en: "" } : (el.modelType === "Property" || el.modelType === "File" ? "" : undefined), // Only set value for Property, MLP, File
+        value: el.modelType === "MultiLanguageProperty" ? { en: "" } : (el.modelType === "Property" || el.modelType === "File" ? "" : undefined),
         cardinality: determineCardinality(el),
         description: getDescription(el),
         semanticId: getSemanticId(el),
@@ -683,17 +695,41 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
         dataType: embeddedDataSpec?.dataType,
         unit: embeddedDataSpec?.unit,
         category: el.category,
-        // Removed sourceOfDefinition
       }
-      
-      // Parse children if it's a collection or list
-      // Check both 'children' and 'value' for backward compatibility with template sources
+
+      // Preserve type-specific fields from template
+      if (el.modelType === "Range") {
+        element.min = el.min ?? ""
+        element.max = el.max ?? ""
+      }
+      if (el.modelType === "Entity") {
+        element.entityType = el.entityType
+        element.globalAssetId = el.globalAssetId
+      }
+      if (el.modelType === "File" || el.modelType === "Blob") {
+        element.contentType = el.contentType
+      }
+      if (el.modelType === "RelationshipElement" || el.modelType === "AnnotatedRelationshipElement") {
+        element.first = el.first
+        element.second = el.second
+      }
+
+      // Parse children: check children, value (SMC/SML), statements (Entity), annotations (AnnotatedRelationshipElement)
       if (Array.isArray(el.children)) {
         element.children = parseSubmodelElements(el.children)
-      } else if (Array.isArray(el.value)) { // Fallback for templates that might use 'value' for children
+      } else if (Array.isArray(el.value)) {
         element.children = parseSubmodelElements(el.value)
+      } else if (Array.isArray(el.statements)) {
+        // Entity uses 'statements' for its children in AAS JSON
+        element.children = parseSubmodelElements(el.statements)
       }
-      
+
+      // AnnotatedRelationshipElement annotations as additional children
+      if (el.modelType === "AnnotatedRelationshipElement" && Array.isArray(el.annotations)) {
+        const annotationChildren = parseSubmodelElements(el.annotations)
+        element.children = element.children ? [...element.children, ...annotationChildren] : annotationChildren
+      }
+
       return element
     })
   }
@@ -1175,8 +1211,9 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
 
       // Add to target (if element was found)
       if (elementToMove) {
-        newData[submodelId] = addToPath(newData[submodelId], targetPath, elementToMove);
-        toast.success(`Moved "${elementToMove.idShort}" to new location`);
+        const moved = elementToMove as SubmodelElement;
+        newData[submodelId] = addToPath(newData[submodelId], targetPath, moved);
+        toast.success(`Moved "${moved.idShort}" to new location`);
       }
 
       return newData;
@@ -1197,18 +1234,21 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
   };
 
   const renderTreeNode = (
-    element: SubmodelElement, 
-    depth: number, 
+    element: SubmodelElement,
+    depth: number,
     path: string[],
     index: number, // Added index for reordering
-    siblings: SubmodelElement[] // Added siblings for reordering
+    siblings: SubmodelElement[], // Added siblings for reordering
+    zebraCounter?: { value: number }
   ): React.ReactNode => {
+    const rowIndex = zebraCounter ? zebraCounter.value++ : 0
+    const isEvenRow = rowIndex % 2 === 0
     const nodeId = path.join('.')
     // Use a unique React key per sibling; keep nodeId for expand/validation logic
     const reactKey = `${nodeId}#${index}`
     const isExpanded = expandedNodes.has(nodeId)
-    const isSelected = selectedElement?.idShort === element.idShort && 
-                      JSON.stringify(path) === JSON.stringify([element.idShort])
+    const isSelected = selectedElementPath.length > 0 &&
+                      JSON.stringify(path) === JSON.stringify(selectedElementPath)
     const hasKids = hasChildren(element)
     const isDeletable = canDelete(element.cardinality)
     const hasValidationError = validationErrors.has(nodeId)
@@ -1314,7 +1354,7 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
             setDragOverContainer(null)
           }}
           className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 group ${
-            isSelected ? "bg-blue-50 dark:bg-blue-900/20 border-l-4 border-[#61caf3]" : ""
+            isSelected ? "bg-blue-50 dark:bg-blue-900/20 border-l-4 border-[#61caf3]" : isEvenRow ? "bg-gray-50/50 dark:bg-gray-800/30" : ""
           } ${hasValidationError ? "border-2 border-red-500 bg-red-50 dark:bg-red-900/20" : ""}
           ${isDragging ? "opacity-50" : ""}
           ${isDragOver ? "border-t-2 border-[#61caf3]" : ""}
@@ -1371,7 +1411,7 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
                 e.stopPropagation()
                 openAddElementDialog(path)
               }}
-              className="p-1 hover:bg-[#61caf3]/20 rounded opacity-0 group-hover:opacity-100 transition-opacity text-[#61caf3]"
+              className="p-1 hover:bg-[#61caf3]/20 rounded text-[#61caf3]/60 hover:text-[#61caf3] transition-colors"
               title="Add child element"
             >
               <Plus className="w-4 h-4" />
@@ -1393,7 +1433,7 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
         {isExpanded && hasKids && element.children && (
           <div>
             {element.children.map((child, idx) =>
-              renderTreeNode(child, depth + 1, [...path, child.idShort], idx, element.children!)
+              renderTreeNode(child, depth + 1, [...path, child.idShort], idx, element.children!, zebraCounter)
             )}
             {/* Add child button inside expanded collection */}
             {editMode && (element.modelType === "SubmodelElementCollection" || element.modelType === "SubmodelElementList" || element.modelType === "Entity") && (
@@ -1451,6 +1491,24 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
     e.target.value = ""
   }
 
+  // Stable helper: find the path of a SubmodelElement within a tree
+  const buildElementPath = useCallback((
+    element: SubmodelElement,
+    elements: SubmodelElement[],
+    currentPath: string[] = []
+  ): string[] | null => {
+    for (const el of elements) {
+      if (el.idShort === element.idShort) {
+        return [...currentPath, el.idShort]
+      }
+      if (el.children) {
+        const found = buildElementPath(element, el.children, [...currentPath, el.idShort])
+        if (found) return found
+      }
+    }
+    return null
+  }, [])
+
   const renderEditableDetails = () => {
     if (!selectedElement || !selectedSubmodel) {
       return (
@@ -1463,20 +1521,7 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
     const isRequired = selectedElement.cardinality === "One" || selectedElement.cardinality === "OneToMany"
     const isMultiple = selectedElement.cardinality === "ZeroToMany" || selectedElement.cardinality === "OneToMany"
 
-    const buildPath = (element: SubmodelElement, elements: SubmodelElement[], currentPath: string[] = []): string[] | null => {
-      for (const el of elements) {
-        if (el.idShort === element.idShort) {
-          return [...currentPath, el.idShort]
-        }
-        if (el.children) {
-          const found = buildPath(element, el.children, [...currentPath, el.idShort])
-          if (found) return found
-        }
-      }
-      return null
-    }
-
-    const elementPath = buildPath(selectedElement, submodelData[selectedSubmodel.idShort] || []) || [selectedElement.idShort]
+    const elementPath = buildElementPath(selectedElement, submodelData[selectedSubmodel.idShort] || []) || [selectedElement.idShort]
 
     const addLanguageToMLP = (newLang: string) => {
       if (selectedElement.modelType !== "MultiLanguageProperty") return
@@ -1522,7 +1567,31 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
             {getTypeBadge(selectedElement.modelType)}
             {getCardinalityBadge(selectedElement.cardinality)}
           </div>
-          <h3 className="font-semibold text-lg">{selectedElement.idShort}</h3>
+          <input
+            type="text"
+            defaultValue={selectedElement.idShort}
+            key={selectedElement.idShort}
+            onBlur={(e) => {
+              const newIdShort = e.target.value.trim()
+              if (
+                newIdShort &&
+                newIdShort !== selectedElement.idShort &&
+                /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(newIdShort)
+              ) {
+                updateElementMetadata(selectedSubmodel.idShort, elementPath, 'idShort', newIdShort)
+                setSelectedElementPath(prev => {
+                  const updated = [...prev]
+                  updated[updated.length - 1] = newIdShort
+                  return updated
+                })
+              } else {
+                // Reset to original if invalid
+                e.target.value = selectedElement.idShort
+              }
+            }}
+            className="font-semibold text-lg w-full bg-transparent border-b border-transparent hover:border-gray-300 dark:hover:border-gray-600 focus:border-[#61caf3] outline-none"
+            title="Click to rename idShort"
+          />
         </div>
 
         <div className="space-y-3 bg-gradient-to-br from-cyan-50 to-sky-50 dark:from-cyan-900/20 dark:to-sky-900/20 rounded-lg p-3 border border-cyan-100 dark:border-cyan-800/30">
@@ -1551,7 +1620,7 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
 
           {selectedElement.modelType === "MultiLanguageProperty" && (
             <div className="space-y-3">
-              {typeof selectedElement.value === 'object' && selectedElement.value !== null && Object.entries(selectedElement.value).map(([lang, text]) => (
+              {typeof selectedElement.value === 'object' && selectedElement.value !== null && Object.entries(selectedElement.value as Record<string, string>).map(([lang, text]) => (
                 <div key={lang} className="flex gap-2 items-start">
                   <div className="flex-1">
                     <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
@@ -1610,11 +1679,136 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
             </div>
           )}
 
-          {(selectedElement.modelType === "SubmodelElementCollection" || 
+          {(selectedElement.modelType === "SubmodelElementCollection" ||
             selectedElement.modelType === "SubmodelElementList") && (
             <div className="text-sm text-gray-600 dark:text-gray-400">
               <p className="font-medium mb-1">Collection Element</p>
               <p>This element contains child properties. Select its children in the tree to edit their values.</p>
+            </div>
+          )}
+
+          {selectedElement.modelType === "Operation" && (
+            <div className="space-y-2 text-sm text-gray-600 dark:text-gray-400">
+              <p className="font-medium">Operation Element</p>
+              <p>Operations define callable functions. Add child elements to define input/output/inoutput variables using the tree below.</p>
+              <div className="grid grid-cols-3 gap-2 pt-1">
+                {(["inputVariables", "outputVariables", "inoutputVariables"] as const).map((varKind) => (
+                  <div key={varKind} className="text-xs text-center px-2 py-1 rounded bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
+                    {varKind === "inputVariables" ? "Input" : varKind === "outputVariables" ? "Output" : "In/Out"}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {selectedElement.modelType === "BasicEventElement" && (
+            <div className="space-y-3 text-sm text-gray-600 dark:text-gray-400">
+              <p className="font-medium">Basic Event Element</p>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Observed (semanticId of observed element):
+                </label>
+                <input
+                  type="text"
+                  value={typeof (selectedElement as any).observed === 'string' ? (selectedElement as any).observed : ''}
+                  onChange={(e) => {
+                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'observed' as any, e.target.value || undefined)
+                  }}
+                  placeholder="e.g. SubmodelElement path to observe..."
+                  className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Direction:
+                </label>
+                <select
+                  value={(selectedElement as any).direction || 'output'}
+                  onChange={(e) => {
+                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'direction' as any, e.target.value)
+                  }}
+                  className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-sm"
+                >
+                  <option value="output">output</option>
+                  <option value="input">input</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  State:
+                </label>
+                <select
+                  value={(selectedElement as any).state || 'on'}
+                  onChange={(e) => {
+                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'state' as any, e.target.value)
+                  }}
+                  className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-sm"
+                >
+                  <option value="on">on</option>
+                  <option value="off">off</option>
+                </select>
+              </div>
+            </div>
+          )}
+
+          {selectedElement.modelType === "AnnotatedRelationshipElement" && (
+            <div className="space-y-3 text-sm text-gray-600 dark:text-gray-400">
+              <p className="font-medium">Annotated Relationship Element</p>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  First (reference):
+                </label>
+                <input
+                  type="text"
+                  value={typeof (selectedElement as any).first === 'string' ? (selectedElement as any).first : ''}
+                  onChange={(e) => {
+                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'first' as any, e.target.value || undefined)
+                  }}
+                  placeholder="Reference to first element..."
+                  className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Second (reference):
+                </label>
+                <input
+                  type="text"
+                  value={typeof (selectedElement as any).second === 'string' ? (selectedElement as any).second : ''}
+                  onChange={(e) => {
+                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'second' as any, e.target.value || undefined)
+                  }}
+                  placeholder="Reference to second element..."
+                  className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-xs font-mono"
+                />
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Annotations are child elements — add them via the tree.
+              </p>
+            </div>
+          )}
+
+          {selectedElement.modelType === "Entity" && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Entity Type:
+                </label>
+                <select
+                  value={(selectedElement as any).entityType || ''}
+                  onChange={(e) => {
+                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'entityType' as any, e.target.value || undefined)
+                  }}
+                  className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-sm"
+                >
+                  <option value="">Select entity type...</option>
+                  <option value="CoManagedEntity">CoManagedEntity</option>
+                  <option value="SelfManagedEntity">SelfManagedEntity</option>
+                </select>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Entity is a container element. Select its children in the tree to edit their values.
+              </p>
             </div>
           )}
 
@@ -1883,14 +2077,14 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
             </h4>
             <input
               type="text"
-              value={selectedElement.semanticId || ''}
+              value={typeof selectedElement.semanticId === 'string' ? selectedElement.semanticId : ''}
               onChange={(e) => {
                 updateElementMetadata(selectedSubmodel.idShort, elementPath, 'semanticId', e.target.value)
               }}
               placeholder="0173-1#02-AAO677#002 or https://..."
               className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-xs font-mono"
             />
-            {selectedElement.semanticId && selectedElement.semanticId.startsWith('http') && (
+            {typeof selectedElement.semanticId === 'string' && selectedElement.semanticId.startsWith('http') && (
               <a
                 href={selectedElement.semanticId}
                 target="_blank"
@@ -1933,14 +2127,15 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
         if (typeof element.semanticId === "string") {
           conceptId = element.semanticId.trim();
         } else if (element.semanticId && typeof element.semanticId === "object") {
-          if (Array.isArray(element.semanticId.keys) && element.semanticId.keys.length > 0) {
-            const key = element.semanticId.keys[0];
+          const semObj = element.semanticId as any;
+          if (Array.isArray(semObj.keys) && semObj.keys.length > 0) {
+            const key = semObj.keys[0];
             conceptId = typeof key === "string" ? key : (key?.value || "");
-          } else if (Array.isArray(element.semanticId.key) && element.semanticId.key.length > 0) {
-            const key = element.semanticId.key[0];
+          } else if (Array.isArray(semObj.key) && semObj.key.length > 0) {
+            const key = semObj.key[0];
             conceptId = typeof key === "string" ? key : (key?.value || "");
-          } else if (element.semanticId.value) {
-            conceptId = String(element.semanticId.value);
+          } else if (semObj.value) {
+            conceptId = String(semObj.value);
           }
         }
         conceptId = conceptId.trim();
@@ -2429,9 +2624,10 @@ ${conceptXml}
       if (typeof element.semanticId === "string") {
         sem = element.semanticId.trim();
       } else if (typeof element.semanticId === "object" && element.semanticId !== null) {
+        const semObj = element.semanticId as any;
         // Handle Reference structure: { type, keys: [{ type, value }] }
-        if (Array.isArray(element.semanticId.keys) && element.semanticId.keys.length > 0) {
-          const key = element.semanticId.keys[0];
+        if (Array.isArray(semObj.keys) && semObj.keys.length > 0) {
+          const key = semObj.keys[0];
           if (typeof key === "string") {
             sem = key.trim();
           } else if (typeof key === "object" && key !== null && key.value) {
@@ -2439,8 +2635,8 @@ ${conceptXml}
           }
         }
         // Try singular 'key' property (some templates use this)
-        else if (Array.isArray(element.semanticId.key) && element.semanticId.key.length > 0) {
-          const key = element.semanticId.key[0];
+        else if (Array.isArray(semObj.key) && semObj.key.length > 0) {
+          const key = semObj.key[0];
           if (typeof key === "string") {
             sem = key.trim();
           } else if (typeof key === "object" && key !== null && key.value) {
@@ -2448,12 +2644,12 @@ ${conceptXml}
           }
         }
         // Try direct value property (legacy format)
-        else if (element.semanticId.value && typeof element.semanticId.value === "string") {
-          sem = element.semanticId.value.trim();
+        else if (semObj.value && typeof semObj.value === "string") {
+          sem = semObj.value.trim();
         }
         // Try id property (some formats use this)
-        else if (element.semanticId.id && typeof element.semanticId.id === "string") {
-          sem = element.semanticId.id.trim();
+        else if (semObj.id && typeof semObj.id === "string") {
+          sem = semObj.id.trim();
         }
       }
       if (sem && sem !== "[object Object]") {
@@ -2594,7 +2790,7 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
       // ReferenceElement: only value is allowed (no semanticId, no embeddedDataSpecifications)
       const v: any = element.value;
       const hasKeys = v && typeof v === "object" && Array.isArray(v.keys) && v.keys.length > 0;
-      const fallback = (typeof v === "string" ? v.trim() : "") || (element.semanticId || "").trim();
+      const fallback = (typeof v === "string" ? v.trim() : "") || (typeof element.semanticId === "string" ? element.semanticId.trim() : "");
       xml += `${indent}  <value>\n`;
       xml += `${indent}    <type>ExternalReference</type>\n`;
       xml += `${indent}    <keys>\n`;
@@ -2733,8 +2929,6 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
               type: "AASX",
               valid: true,
               processingTime: 0,
-              parsed: null,
-              aasData: null,
               thumbnail: thumbnail || undefined,
             });
           }
@@ -2774,10 +2968,12 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
       const collectConcepts = (elements: SubmodelElement[]) => {
         elements.forEach(element => {
           if (element.semanticId) {
-            const conceptId = element.semanticId;
-            if (!collectedConceptDescriptions[conceptId]) {
+            const conceptId = typeof element.semanticId === "string"
+              ? element.semanticId
+              : (element.semanticId as any).keys?.[0]?.value || "";
+            if (conceptId && !collectedConceptDescriptions[conceptId]) {
               // Use idShort from the element as a fallback for concept description idShort
-              const conceptIdShort = element.idShort; 
+              const conceptIdShort = element.idShort;
               collectedConceptDescriptions[conceptId] = {
                 id: conceptId,
                 idShort: conceptIdShort, // Use element's idShort as concept's idShort
@@ -2802,11 +2998,12 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
         collectConcepts(elements);
       });
 
-      // REPLACED: Build the final XML using the shared builder to ensure a correct 3.1 structure
-      const aasXml = buildCurrentXml();
+      // Reuse the XML already built by handleValidate if data hasn't changed (hasValidated=true means
+      // lastGeneratedXml is fresh). Only re-build if validation hasn't run yet.
+      const aasXml = (hasValidated && lastGeneratedXml) ? lastGeneratedXml : buildCurrentXml();
 
       // Store for debugging and perform XML schema validation
-      setLastGeneratedXml(aasXml)
+      if (!hasValidated || !lastGeneratedXml) setLastGeneratedXml(aasXml)
       console.log("[v0] EDITOR: Starting XML schema validation for generated AAS...")
       console.log("[v0] EDITOR: Generated XML length:", aasXml.length)
       // Debug: Log the first 2000 characters to verify structure
@@ -3068,8 +3265,6 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
               type: "AASX",
               valid: true,
               processingTime: 0,
-              parsed: null,
-              aasData: null,
               thumbnail: thumbnail || undefined,
             })
           }
@@ -3145,11 +3340,11 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
             hasValue = typeof element.value === 'string' && element.value.trim() !== ''
           } else if (element.modelType === "MultiLanguageProperty") {
             if (typeof element.value === 'object' && element.value !== null) {
-              const values = Object.values(element.value).filter(v => v && v.trim() !== '')
+              const values = Object.values(element.value as Record<string, string>).filter(v => v && v.trim() !== '')
               hasValue = values.length > 0
             }
           } else if (element.modelType === "SubmodelElementCollection" || element.modelType === "SubmodelElementList") {
-            hasValue = (element.children && element.children.length > 0)
+            hasValue = !!(element.children && element.children.length > 0)
           } else if (element.modelType === "File") {
             // NEW: File required -> need a path or uploaded file
             hasValue = (typeof element.value === 'string' && element.value.trim() !== '') || !!element.fileData
@@ -3191,7 +3386,7 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
       template,
       idShort: template.name.replace(/\s+/g, '')
     }
-    
+
     const fetchedStructure = await fetchTemplateDetails(template.name)
     const structure = fetchedStructure || generateTemplateStructure(template.name)
     
@@ -3412,7 +3607,6 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
     // Select the new element
     setTimeout(() => {
       const path = addElementParentPath ? [...addElementParentPath, newElementIdShort] : [newElementIdShort];
-      const elements = submodelData[submodelId] || [];
       const findByPath = (els: SubmodelElement[], p: string[], idx = 0): SubmodelElement | null => {
         if (idx >= p.length) return null;
         const cur = els.find(e => e.idShort === p[idx]);
@@ -3423,7 +3617,10 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
       // Use the updated data
       setSubmodelData(current => {
         const found = findByPath(current[submodelId] || [], path);
-        if (found) setSelectedElement(found);
+        if (found) {
+          setSelectedElement(found);
+          setSelectedElementPath(path);
+        }
         return current;
       });
     }, 100);
@@ -3818,7 +4015,7 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
     setSubmodelData((prev) => {
       const next = { ...prev };
 
-      const fill = (els: SubmodelElement[]) => {
+      const fill = (els: SubmodelElement[]): SubmodelElement[] => {
         return els.map((el) => {
           // Only fill Property, MLP, File
           if ((el.cardinality === "One" || el.cardinality === "OneToMany")) {
@@ -4531,6 +4728,88 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
         sai.appendChild(name);
         sai.appendChild(value);
         container.appendChild(sai);
+        fixCount++;
+      }
+    });
+
+    // Pass 2b: specificAssetId elements must have a value child
+    Array.from(doc.getElementsByTagName("specificAssetId")).forEach((sai) => {
+      const children = Array.from(sai.children);
+      const valueChild = children.find((c) => c.localName === "value");
+      const nameChild = children.find((c) => c.localName === "name");
+
+      if (!valueChild) {
+        // Missing value element - add one
+        const value = create("value");
+        const nearest = findNearestIdShort(sai) || "asset";
+        const nameText = nameChild?.textContent?.trim() || nearest;
+        const gai = getGlobalAssetId() || nameText;
+        value.textContent = gai;
+        sai.appendChild(value);
+        fixCount++;
+        console.log(`[v0] Added missing value to specificAssetId: ${nameText}`);
+      } else if (!valueChild.textContent?.trim()) {
+        // Empty value element - fill it
+        const nearest = findNearestIdShort(sai) || "asset";
+        const nameText = nameChild?.textContent?.trim() || nearest;
+        const gai = getGlobalAssetId() || nameText;
+        valueChild.textContent = gai;
+        fixCount++;
+        console.log(`[v0] Filled empty value in specificAssetId: ${nameText}`);
+      }
+    });
+
+    // Pass 2c: globalAssetId must not be empty (minLength 1)
+    Array.from(doc.getElementsByTagName("globalAssetId")).forEach((el) => {
+      if (!el.textContent?.trim()) {
+        const context = findNearestIdShort(el) || "asset";
+        el.textContent = `https://example.com/asset/${context}`;
+        fixCount++;
+      }
+    });
+
+    // Pass 2d: version must match pattern (0|[1-9][0-9]*) - set to "1" if empty/invalid
+    Array.from(doc.getElementsByTagName("version")).forEach((el) => {
+      const val = el.textContent?.trim() || "";
+      if (!val || !/^(0|[1-9][0-9]*)$/.test(val)) {
+        el.textContent = "1";
+        fixCount++;
+      }
+    });
+
+    // Pass 2e: revision must match pattern (0|[1-9][0-9]*) - set to "0" if empty/invalid
+    Array.from(doc.getElementsByTagName("revision")).forEach((el) => {
+      const val = el.textContent?.trim() || "";
+      if (!val || !/^(0|[1-9][0-9]*)$/.test(val)) {
+        el.textContent = "0";
+        fixCount++;
+      }
+    });
+
+    // Pass 2f: unit must not be empty if present - remove if empty
+    Array.from(doc.getElementsByTagName("unit")).forEach((el) => {
+      if (!el.textContent?.trim()) {
+        el.parentElement?.removeChild(el);
+        fixCount++;
+      }
+    });
+
+    // Pass 2g: isCaseOf must have reference child - remove if empty
+    Array.from(doc.getElementsByTagName("isCaseOf")).forEach((el) => {
+      const hasReference = Array.from(el.children).some((c) => c.localName === "reference");
+      if (!hasReference) {
+        el.parentElement?.removeChild(el);
+        fixCount++;
+      }
+    });
+
+    // Pass 2h: id elements must not be empty (minLength 1) - skip if under key element
+    Array.from(doc.getElementsByTagName("id")).forEach((el) => {
+      if (el.parentElement?.localName === "key") return;
+      if (!el.textContent?.trim()) {
+        const context = findNearestIdShort(el) || "element";
+        el.textContent = `https://example.com/aas/${context}`;
+        fixCount++;
       }
     });
 
@@ -4982,12 +5261,13 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
 
     // DEBUG: Test if our pattern would match the sample element
     if (qualifiersMatches.length > 0) {
+      const sample = qualifiersMatches[0]!;
       const testPattern = /<([a-zA-Z0-9_-]+:)?qualifiers[^>]*>\s*<\/([a-zA-Z0-9_-]+:)?qualifiers>/gi;
-      const wouldMatch = testPattern.test(qualifiersMatches[0]);
+      const wouldMatch = testPattern.test(sample);
       console.log(`[v0] Test pattern matches sample: ${wouldMatch}`);
       if (!wouldMatch) {
         // Try to understand what's inside the qualifiers
-        const innerContent = qualifiersMatches[0].replace(/<[^>]*qualifiers[^>]*>/gi, '').replace(/<\/[^>]*qualifiers>/gi, '');
+        const innerContent = sample.replace(/<[^>]*qualifiers[^>]*>/gi, '').replace(/<\/[^>]*qualifiers>/gi, '');
         console.log(`[v0] Inner content of qualifiers (length=${innerContent.length}):`, JSON.stringify(innerContent.substring(0, 200)));
       }
     }
@@ -5215,13 +5495,65 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
     return undefined;
   }
 
+  // Fix value type mismatches by changing valueType to xs:string when value doesn't match
+  const fixValueTypeMismatches = (): number => {
+    let fixCount = 0;
+
+    const fixElements = (elements: SubmodelElement[]): SubmodelElement[] => {
+      return elements.map(element => {
+        const updated = { ...element };
+
+        // Check Property elements for value type mismatches
+        if (element.modelType === "Property" && typeof element.value === 'string' && element.value.trim() !== '') {
+          const vtNorm = normalizeValueType(element.valueType) || deriveValueTypeFromIEC(element.dataType);
+          if (vtNorm && !isValidValueForXsdType(vtNorm, element.value)) {
+            // Value doesn't match declared type - change to xs:string
+            console.log(`[v0] Fixing valueType mismatch: ${element.idShort} "${element.value}" was ${vtNorm}, changing to xs:string`);
+            updated.valueType = 'xs:string';
+            // Also clear IEC dataType if it was causing integer/decimal type
+            if (element.dataType && ['INTEGER_MEASURE', 'INTEGER_COUNT', 'INTEGER_CURRENCY', 'REAL_MEASURE', 'REAL_COUNT', 'REAL_CURRENCY'].includes(element.dataType.toUpperCase())) {
+              updated.dataType = 'STRING';
+            }
+            fixCount++;
+          }
+        }
+
+        // Recursively fix children
+        if (element.children && element.children.length > 0) {
+          updated.children = fixElements(element.children);
+        }
+
+        return updated;
+      });
+    };
+
+    // Fix all submodels
+    const newSubmodelData: Record<string, SubmodelElement[]> = {};
+    Object.entries(submodelData).forEach(([smId, elements]) => {
+      newSubmodelData[smId] = fixElements(elements);
+    });
+
+    if (fixCount > 0) {
+      setSubmodelData(newSubmodelData);
+      toast.info(`Fixed ${fixCount} value type mismatch${fixCount !== 1 ? 'es' : ''} (changed to xs:string)`);
+    }
+
+    return fixCount;
+  };
+
   // ADD: click handler for the Fix button that fixes then validates once
   const handleFixClick = async () => {
     if (isFixing || validationBusy) return;
     setIsFixing(true);
     console.log("[v0] Fix button clicked");
     try {
+      // First fix value type mismatches in the in-memory data
+      const valueTypeFixCount = fixValueTypeMismatches();
+
+      // Then fix XML structure issues
       const fixedXml = fixXmlErrors();
+
+      // Validate with the fixed data
       await runInternalValidation(fixedXml || undefined, { openDialog: true });
     } finally {
       setIsFixing(false);
@@ -5273,7 +5605,6 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
                         ? "bg-white text-gray-900 border-2 border-transparent focus:border-white/50 focus:outline-none"
                         : "bg-white/20 text-white border border-white/20 cursor-not-allowed"
                     )}
-                    disabled={!editMode}
                   />
                   <button
                     onClick={() => copyText('IdShort', aasConfig.idShort)}
@@ -5297,7 +5628,6 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
                         ? "bg-white text-gray-900 border-2 border-transparent focus:border-white/50 focus:outline-none"
                         : "bg-white/20 text-white border border-white/20 cursor-not-allowed"
                     )}
-                    disabled={!editMode}
                   />
                   <button
                     onClick={() => copyText('ID', aasConfig.id)}
@@ -5321,7 +5651,6 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
                         ? "bg-white text-gray-900 border-2 border-transparent focus:border-white/50 focus:outline-none"
                         : "bg-white/20 text-white border border-white/20 cursor-not-allowed"
                     )}
-                    disabled={!editMode}
                   />
                   <button
                     onClick={() => copyText('Asset Kind', aasConfig.assetKind)}
@@ -5345,7 +5674,6 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
                         ? "bg-white text-gray-900 border-2 border-transparent focus:border-white/50 focus:outline-none"
                         : "bg-white/20 text-white border border-white/20 cursor-not-allowed"
                     )}
-                    disabled={!editMode}
                   />
                   <button
                     onClick={() => copyText('Global Asset ID', aasConfig.globalAssetId)}
@@ -5398,17 +5726,6 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
             </div>
             <div className="flex items-center gap-2">
                <button
-                 onClick={() => setEditMode((v) => !v)}
-                 className={cn(
-                   "px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 shadow-lg",
-                   editMode
-                     ? "bg-white text-emerald-600 hover:bg-emerald-50"
-                     : "bg-white/20 text-white hover:bg-white/30 backdrop-blur-sm border border-white/30"
-                 )}
-               >
-                 {editMode ? "Done Editing" : "Edit Mode"}
-               </button>
-               <button
                  onClick={() => {
                    setValidationDialogDismissed(false);
                    runInternalValidation(undefined, { openDialog: true });
@@ -5438,10 +5755,10 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
               </button>
                <button
                  onClick={generateFinalAAS}
-                 disabled={isGenerating || !canGenerate}
+                 disabled={isGenerating}
                  className={cn(
                    "flex items-center gap-2 px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200",
-                   canGenerate
+                   !isGenerating
                      ? "bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-lg shadow-emerald-500/30 hover:shadow-emerald-500/50 hover:scale-[1.02]"
                      : "bg-white/20 text-white/50 cursor-not-allowed"
                  )}
@@ -5773,14 +6090,19 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <Input
                       ref={(el) => { if (treeSearchFocused && el) { el.focus(); setTreeSearchFocused(false); } }}
-                      value={treeSearchQuery}
-                      onChange={(e) => setTreeSearchQuery(e.target.value)}
+                      value={treeSearchInput}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setTreeSearchInput(val);
+                        if (treeSearchDebounceRef.current) clearTimeout(treeSearchDebounceRef.current);
+                        treeSearchDebounceRef.current = setTimeout(() => setTreeSearchQuery(val), 150);
+                      }}
                       placeholder="Search elements... (Ctrl+F)"
                       className="pl-10 h-9 text-sm bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700"
                     />
-                    {treeSearchQuery && (
+                    {treeSearchInput && (
                       <button
-                        onClick={() => setTreeSearchQuery("")}
+                        onClick={() => { setTreeSearchInput(""); setTreeSearchQuery(""); }}
                         className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                       >
                         <X className="w-3.5 h-3.5" />
@@ -5872,9 +6194,12 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
                 )}
 
                 {/* Tree Nodes */}
-                {(treeSearchQuery ? filteredElements : submodelData[selectedSubmodel.idShort])?.map((element, idx) =>
-                  renderTreeNode(element, 0, [element.idShort], idx, submodelData[selectedSubmodel.idShort])
-                )}
+                {(() => {
+                  const zc = { value: 0 }
+                  return (treeSearchQuery ? filteredElements : submodelData[selectedSubmodel.idShort])?.map((element, idx) =>
+                    renderTreeNode(element, 0, [element.idShort], idx, submodelData[selectedSubmodel.idShort], zc)
+                  )
+                })()}
                 {/* Drop zone for moving elements to root level */}
                 {draggedItem && (
                   <div
@@ -5908,8 +6233,8 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
                     Drop here to move to root level
                   </div>
                 )}
-                {/* Add Element at bottom when empty or as alternative */}
-                {editMode && (submodelData[selectedSubmodel.idShort]?.length || 0) === 0 && (
+                {/* Add Element at bottom of tree */}
+                {editMode && (submodelData[selectedSubmodel.idShort]?.length || 0) === 0 ? (
                   <div className="flex flex-col items-center justify-center py-12 text-center">
                     <div className="w-16 h-16 rounded-2xl bg-[#61caf3]/10 flex items-center justify-center mb-4">
                       <Plus className="w-8 h-8 text-[#61caf3]" />
@@ -5923,6 +6248,14 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
                       Add First Element
                     </button>
                   </div>
+                ) : editMode && (
+                  <button
+                    onClick={() => openAddElementDialog(null)}
+                    className="flex items-center gap-2 px-3 py-2 mt-2 text-sm text-[#61caf3] hover:bg-[#61caf3]/10 rounded-lg transition-colors w-full"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add element</span>
+                  </button>
                 )}
               </>
             ) : (
@@ -5938,10 +6271,7 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
         </div>
 
         {/* Right Panel - Editable Fields (locked when Edit is off) */}
-        <div className={cn(
-          "w-96 overflow-y-auto bg-gradient-to-b from-gray-50 to-gray-100/50 dark:from-gray-800 dark:to-gray-900/50 border-l border-gray-200 dark:border-gray-700",
-          editMode ? "" : "pointer-events-none opacity-60"
-        )}>
+        <div className="w-96 overflow-y-auto bg-gradient-to-b from-gray-50 to-gray-100/50 dark:from-gray-800 dark:to-gray-900/50 border-l border-gray-200 dark:border-gray-700">
           {renderEditableDetails()}
         </div>
       </div>

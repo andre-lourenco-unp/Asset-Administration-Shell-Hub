@@ -294,6 +294,31 @@ export function fixXml(inputXml: string): FixXmlResult {
     }
   });
 
+  // Pass 2b: specificAssetId elements must have a value child
+  Array.from(doc.getElementsByTagName("specificAssetId")).forEach((sai) => {
+    const children = Array.from(sai.children);
+    const valueChild = children.find((c) => c.localName === "value");
+    const nameChild = children.find((c) => c.localName === "name");
+
+    if (!valueChild) {
+      // Missing value element - add one
+      const value = create("value");
+      const nearest = findNearestIdShort(sai) || "asset";
+      const nameText = nameChild?.textContent?.trim() || nearest;
+      const gai = getGlobalAssetId() || nameText;
+      value.textContent = gai;
+      sai.appendChild(value);
+      addFix(`specificAssetId (${nameText})`, "Missing value element", `Added value="${gai}"`);
+    } else if (!valueChild.textContent?.trim()) {
+      // Empty value element - fill it
+      const nearest = findNearestIdShort(sai) || "asset";
+      const nameText = nameChild?.textContent?.trim() || nearest;
+      const gai = getGlobalAssetId() || nameText;
+      valueChild.textContent = gai;
+      addFix(`specificAssetId (${nameText})`, "Empty value", `Set value="${gai}"`);
+    }
+  });
+
   // Pass 3: assetType must be non-empty
   Array.from(doc.getElementsByTagName("assetType")).forEach((el) => {
     const txt = el.textContent?.trim() || "";
@@ -346,6 +371,64 @@ export function fixXml(inputXml: string): FixXmlResult {
     } else if (!valueChild.textContent?.trim()) {
       valueChild.textContent = "https://example.com/aas/123";
       addFix(`key (${context})`, "Empty value element", "Set to 'https://example.com/aas/123'");
+    }
+  });
+
+  // Pass 4c: globalAssetId must not be empty (minLength 1)
+  Array.from(doc.getElementsByTagName("globalAssetId")).forEach((el) => {
+    if (!el.textContent?.trim()) {
+      const context = findNearestIdShort(el) || "asset";
+      el.textContent = `https://example.com/asset/${context}`;
+      addFix(`globalAssetId (${context})`, "Empty value", `Set to 'https://example.com/asset/${context}'`);
+    }
+  });
+
+  // Pass 4d: unit must not be empty if present (minLength 1) - remove if empty
+  Array.from(doc.getElementsByTagName("unit")).forEach((el) => {
+    if (!el.textContent?.trim()) {
+      el.parentElement?.removeChild(el);
+      addFix("unit", "Empty value", "Removed empty element");
+    }
+  });
+
+  // Pass 4e: version must match pattern (0|[1-9][0-9]*) - set to "1" if empty/invalid
+  Array.from(doc.getElementsByTagName("version")).forEach((el) => {
+    const val = el.textContent?.trim() || "";
+    if (!val || !/^(0|[1-9][0-9]*)$/.test(val)) {
+      const context = findNearestIdShort(el) || "unknown";
+      el.textContent = "1";
+      addFix(`version (${context})`, val ? `Invalid pattern: "${val}"` : "Empty value", "Set to '1'");
+    }
+  });
+
+  // Pass 4f: revision must match pattern (0|[1-9][0-9]*) - set to "0" if empty/invalid
+  Array.from(doc.getElementsByTagName("revision")).forEach((el) => {
+    const val = el.textContent?.trim() || "";
+    if (!val || !/^(0|[1-9][0-9]*)$/.test(val)) {
+      const context = findNearestIdShort(el) || "unknown";
+      el.textContent = "0";
+      addFix(`revision (${context})`, val ? `Invalid pattern: "${val}"` : "Empty value", "Set to '0'");
+    }
+  });
+
+  // Pass 4g: isCaseOf must have reference child - remove if empty
+  Array.from(doc.getElementsByTagName("isCaseOf")).forEach((el) => {
+    const hasReference = Array.from(el.children).some((c) => c.localName === "reference");
+    if (!hasReference) {
+      el.parentElement?.removeChild(el);
+      const context = findNearestIdShort(el) || "unknown";
+      addFix(`isCaseOf (${context})`, "Missing reference child", "Removed empty element");
+    }
+  });
+
+  // Pass 4h: id elements must not be empty (minLength 1)
+  Array.from(doc.getElementsByTagName("id")).forEach((el) => {
+    // Skip if parent is a "key" element (those are handled separately)
+    if (el.parentElement?.localName === "key") return;
+    if (!el.textContent?.trim()) {
+      const context = findNearestIdShort(el) || "element";
+      el.textContent = `https://example.com/aas/${context}`;
+      addFix(`id (${context})`, "Empty value", `Set to 'https://example.com/aas/${context}'`);
     }
   });
 

@@ -271,7 +271,7 @@ export async function validateAASXJson(
     if (result.valid) {
       console.log("Parsed JSON Object:", parsedJson)
       const aasData = parseAASData(parsedJson)
-      return { valid: true, parsed: parsedJson, aasData }
+      return { valid: true, parsed: parsedJson, aasData: aasData ?? undefined }
     } else {
       const errors = (result.errors || []).map((e) => `${e.path}: ${e.message}`)
       console.warn("JSON Validation Errors:", errors)

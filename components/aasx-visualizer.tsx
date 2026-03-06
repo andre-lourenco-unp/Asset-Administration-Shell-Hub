@@ -175,7 +175,7 @@ export function AASXVisualizer({ uploadedFiles, newFileIndex, onFileSelected }: 
   }
 
   useEffect(() => {
-    if (newFileIndex !== null && newFileIndex >= 0 && uploadedFiles[newFileIndex]) {
+    if (newFileIndex != null && newFileIndex >= 0 && uploadedFiles[newFileIndex]) {
       setSelectedFile(uploadedFiles[newFileIndex])
       onFileSelected?.()
     } else if (uploadedFiles.length > 0 && !selectedFile) {
@@ -1804,7 +1804,7 @@ export function AASXVisualizer({ uploadedFiles, newFileIndex, onFileSelected }: 
               {/* Validation Errors section (live + fallback) */}
               {(() => {
                 const currentErrors = (liveErrors && liveErrors.length > 0) ? liveErrors : (selectedFile?.errors || [])
-                const friendly = buildFriendlyErrors(currentErrors)
+                const friendly = buildFriendlyErrors(currentErrors as (string | ValidationError)[])
                 if (friendly.length === 0) return null
                 return (
                   <div className="p-4 mt-4">

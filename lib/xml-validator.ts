@@ -1010,13 +1010,13 @@ export async function validateXml(
 
     if (result.errors && result.errors.length > 0) {
       const normalizedErrors = result.errors.map((e: any) => (typeof e === "string" ? e : (e.message ?? String(e))))
-      const uniqueErrors = Array.from(new Set(normalizedErrors.map((m) => m.replace(/\s+/g, " ").trim())))
+      const uniqueErrors = Array.from(new Set(normalizedErrors.map((m: string) => m.replace(/\s+/g, " ").trim()))) as string[]
       return { valid: false, errors: uniqueErrors }
     }
 
     if (result.stderr && result.stderr.length > 0) {
       const stderrArr = Array.isArray(result.stderr) ? result.stderr : [result.stderr]
-      const uniqueErrors = Array.from(new Set(stderrArr.map((m) => String(m).replace(/\s+/g, " ").trim())))
+      const uniqueErrors = Array.from(new Set(stderrArr.map((m: any) => String(m).replace(/\s+/g, " ").trim()))) as string[]
       return { valid: false, errors: uniqueErrors }
     }
 
@@ -1369,7 +1369,7 @@ export function extractAASDataFromXML(parsed: any): ParsedAASData | null {
 export async function validateAASXXml(
   xml: string,
 ): Promise<
-  { valid: true; parsed: any; aasData?: ParsedAASData } | { valid: false; errors: string[]; parsed?: any; aasData?: ParsedAASData }
+  { valid: true; parsed: any; aasData?: ParsedAASData } | { valid: false; errors: (string | ValidationError)[]; parsed?: any; aasData?: ParsedAASData }
 > {
   const isLegacy10 = /http:\/\/www\.admin-shell\.io\/aas\/1\/0/i.test(xml) || /<aas:aasenv/i.test(xml)
   const nsMatch = xml.match(/xmlns="https:\/\/admin-shell\.io\/aas\/(\d+)\/(\d+)"/i)
@@ -1406,7 +1406,7 @@ export async function validateAASXXml(
   const aasData = extractAASDataFromXML(parsed)
 
   if (isLegacy10) {
-    return { valid: true, parsed, aasData }
+    return { valid: true, parsed, aasData: aasData ?? undefined }
   }
 
   const schemaUrl =
@@ -1416,7 +1416,7 @@ export async function validateAASXXml(
     const res = await fetch(schemaUrl, { mode: 'cors' })
     if (!res.ok) {
       const errorMsg = `Failed to fetch AAS schema: ${res.status} ${res.statusText}. Cannot perform full schema validation.`
-      return { valid: false, errors: [errorMsg], parsed, aasData }
+      return { valid: false, errors: [errorMsg], parsed, aasData: aasData ?? undefined }
     }
     const xsd = await res.text()
 
@@ -1424,7 +1424,7 @@ export async function validateAASXXml(
     const validationResult = await validateXml(xmlForValidation, xsd)
 
     if (validationResult.valid) {
-      return { valid: true, parsed, aasData }
+      return { valid: true, parsed, aasData: aasData ?? undefined }
     } else {
       let errors = validationResult.errors ?? ["XML validation failed"]
       if (is30) {
@@ -1433,10 +1433,10 @@ export async function validateAASXXml(
           ...errors,
         ]
       }
-      return { valid: false, errors, parsed, aasData }
+      return { valid: false, errors, parsed, aasData: aasData ?? undefined }
     }
   } catch (err: any) {
     const errorMsg = `Schema validation error (external service issue): ${err.message}. Cannot perform full schema validation.`
-    return { valid: false, errors: [errorMsg], parsed, aasData }
+    return { valid: false, errors: [errorMsg], parsed, aasData: aasData ?? undefined }
   }
 }
