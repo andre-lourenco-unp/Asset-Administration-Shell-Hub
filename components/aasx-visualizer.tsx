@@ -983,6 +983,22 @@ export function AASXVisualizer({ uploadedFiles, newFileIndex, onFileSelected }: 
     const type = getElementType(selectedElement)
     const isCollection = type === "SubmodelElementCollection" || type === "SubmodelElementList"
 
+    // Cross-reference navigation: try to find the target element by its value (idShort)
+    const handleKeyNavigate = (value: string) => {
+      if (!value) return
+      // Extract the last segment (e.g. "LaserPower" from a path like "SubmodelId/LaserPower")
+      const segments = value.split('/').filter(Boolean)
+      const needle = segments[segments.length - 1]
+      const path = findFirstPathForIdShort(needle)
+      if (path) {
+        goToIssuePath(path)
+      } else {
+        // Try the full value as-is
+        const pathFull = findFirstPathForIdShort(value)
+        if (pathFull) goToIssuePath(pathFull)
+      }
+    }
+
     // Type color mapping for header backgrounds
     const typeColorMap: Record<string, string> = {
       SubmodelElementCollection: "#61caf3",
@@ -1521,6 +1537,7 @@ export function AASXVisualizer({ uploadedFiles, newFileIndex, onFileSelected }: 
               editable={editMode}
               onChange={(next) => setField("value", next)}
               title="Reference Keys"
+              onNavigate={!editMode ? handleKeyNavigate : undefined}
             />
           </div>
         )}
@@ -1545,6 +1562,7 @@ export function AASXVisualizer({ uploadedFiles, newFileIndex, onFileSelected }: 
                 editable={editMode}
                 onChange={(next) => setField(name, next)}
                 title={`${name} Keys`}
+                onNavigate={!editMode ? handleKeyNavigate : undefined}
               />
             </div>
           ))}

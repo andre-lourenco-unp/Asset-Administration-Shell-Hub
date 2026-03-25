@@ -54,7 +54,7 @@ export default function MinioSetupDialog({ open, onOpenChange, onSave }: MinioSe
 
   useEffect(() => {
     if (!open) return;
-    const stored = typeof window !== "undefined" ? localStorage.getItem("minioConfig") : null;
+    const stored = typeof window !== "undefined" ? sessionStorage.getItem("minioConfig") : null;
     if (stored) {
       try {
         const parsed = JSON.parse(stored);
@@ -68,7 +68,7 @@ export default function MinioSetupDialog({ open, onOpenChange, onSave }: MinioSe
   }, [open, form]);
 
   const onSubmit = (values: MinioConfig) => {
-    localStorage.setItem("minioConfig", JSON.stringify(values));
+    sessionStorage.setItem("minioConfig", JSON.stringify(values));
     toast.success("MinIO account saved");
     onSave?.(values);
     onOpenChange(false);

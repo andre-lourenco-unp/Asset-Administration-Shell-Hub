@@ -6,7 +6,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import type { ParsedCapability, ParsedCapabilityConstraint, CapabilityRole } from '@/lib/types/capability'
+import type { ParsedCapability, ParsedCapabilityConstraint, ParsedCapabilityRelation, CapabilityRole } from '@/lib/types/capability'
 import { PropertyValueRenderer } from './PropertyValueRenderer'
 
 /** Palette of distinguishable colors for property–constraint links */
@@ -135,7 +135,37 @@ export function CapabilityCard({ capability }: CapabilityCardProps) {
             </div>
           </div>
         )}
+        {capability.composedOf.length > 0 && (
+          <CapabilityRelationSet title="Composed Of" relations={capability.composedOf} />
+        )}
+        {capability.generalizedBy.length > 0 && (
+          <CapabilityRelationSet title="Generalized By" relations={capability.generalizedBy} />
+        )}
       </CardContent>
     </Card>
+  )
+}
+
+function CapabilityRelationSet({ title, relations }: { title: string; relations: ParsedCapabilityRelation[] }) {
+  return (
+    <div className="space-y-2">
+      <h4 className="text-sm font-medium">{title}</h4>
+      <div className="grid gap-1.5">
+        {relations.map((r) => (
+          <div
+            key={r.idShort}
+            className="text-sm flex items-center gap-2 flex-wrap rounded-lg px-2 py-1.5 border border-muted"
+          >
+            <span className="font-medium">{r.idShort}</span>
+            <Badge variant="outline">{r.type}</Badge>
+            {r.secondValue && (
+              <span className="text-xs text-muted-foreground ml-auto">
+                {r.secondValue}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }

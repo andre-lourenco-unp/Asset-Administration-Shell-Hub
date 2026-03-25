@@ -13,9 +13,11 @@ interface KeysEditorProps {
   editable?: boolean;
   onChange: (next: ReferenceLike) => void;
   title?: string;
+  /** When provided, key values become clickable links that call this handler with the value */
+  onNavigate?: (value: string) => void;
 }
 
-const KeysEditor: React.FC<KeysEditorProps> = ({ reference, editable = true, onChange, title = "Keys" }) => {
+const KeysEditor: React.FC<KeysEditorProps> = ({ reference, editable = true, onChange, title = "Keys", onNavigate }) => {
   const keys: KeyEntry[] = Array.isArray(reference?.keys) ? reference!.keys! : [];
 
   const updateKey = (idx: number, patch: Partial<KeyEntry>) => {
@@ -78,6 +80,14 @@ const KeysEditor: React.FC<KeysEditorProps> = ({ reference, editable = true, onC
                       placeholder="e.g., 0173-1#02-AAO677#002"
                       className="font-mono text-xs"
                     />
+                  ) : onNavigate && k.value ? (
+                    <button
+                      onClick={() => onNavigate(k.value!)}
+                      className="text-xs font-mono break-all text-left text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                      title={`Navigate to ${k.value}`}
+                    >
+                      {k.value}
+                    </button>
                   ) : (
                     <div className="text-xs font-mono break-all">{k.value ?? ""}</div>
                   )}

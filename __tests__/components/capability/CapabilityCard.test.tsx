@@ -25,6 +25,8 @@ const mockCapability: ParsedCapability = {
     },
   ],
   constraints: [],
+  composedOf: [],
+  generalizedBy: [],
 }
 
 describe('CapabilityCard', () => {
@@ -72,5 +74,46 @@ describe('CapabilityCard without comment', () => {
     expect(container.querySelector('[data-slot="card"]')).not.toBeNull()
     expect(screen.getByText('ColdMetalTransfer')).toBeInTheDocument()
     expect(screen.queryByText('CMT operates with low-heat input')).not.toBeInTheDocument()
+  })
+})
+
+describe('CapabilityCard with ComposedOf relations', () => {
+  it('renders Composed Of section with relation entries', () => {
+    const capWithRelations: ParsedCapability = {
+      ...mockCapability,
+      composedOf: [
+        { idShort: 'ComposedOfPreheating', type: 'IsComposedOf', firstValue: 'WeldingProcess', secondValue: 'Preheating' },
+        { idShort: 'ComposedOfCooling', type: 'IsComposedOf', firstValue: 'WeldingProcess', secondValue: 'Cooling' },
+      ],
+    }
+    render(<CapabilityCard capability={capWithRelations} />)
+    expect(screen.getByText('Composed Of')).toBeInTheDocument()
+    expect(screen.getByText('ComposedOfPreheating')).toBeInTheDocument()
+    expect(screen.getByText('ComposedOfCooling')).toBeInTheDocument()
+    expect(screen.getByText('Preheating')).toBeInTheDocument()
+    expect(screen.getByText('Cooling')).toBeInTheDocument()
+  })
+})
+
+describe('CapabilityCard with GeneralizedBy relations', () => {
+  it('renders Generalized By section with relation entries', () => {
+    const capWithGeneralized: ParsedCapability = {
+      ...mockCapability,
+      generalizedBy: [
+        { idShort: 'GeneralizedByWelding', type: 'IsGeneralizedBy', firstValue: 'LaserWelding', secondValue: 'Welding' },
+      ],
+    }
+    render(<CapabilityCard capability={capWithGeneralized} />)
+    expect(screen.getByText('Generalized By')).toBeInTheDocument()
+    expect(screen.getByText('GeneralizedByWelding')).toBeInTheDocument()
+    expect(screen.getByText('Welding')).toBeInTheDocument()
+  })
+})
+
+describe('CapabilityCard without relations', () => {
+  it('does not render Composed Of or Generalized By when empty', () => {
+    render(<CapabilityCard capability={mockCapability} />)
+    expect(screen.queryByText('Composed Of')).not.toBeInTheDocument()
+    expect(screen.queryByText('Generalized By')).not.toBeInTheDocument()
   })
 })

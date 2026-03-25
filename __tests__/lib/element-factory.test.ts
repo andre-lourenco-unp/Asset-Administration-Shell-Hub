@@ -94,10 +94,13 @@ describe('createElement — CapabilityName', () => {
     expect(el.children![3].semanticId).toBe(CAPABILITY_SEMANTIC_IDS.CapabilityRelations)
   })
 
-  it('CapabilityRelations starts with empty children (ConstraintSet created on demand)', () => {
+  it('CapabilityRelations has ConstraintSet, ComposedOfSet, GeneralizedBySet', () => {
     const el = createElement(params)
     const relations = el.children![3]
-    expect(relations.children).toEqual([])
+    expect(relations.children).toHaveLength(3)
+    expect(relations.children![0].idShort).toBe('ConstraintSet')
+    expect(relations.children![1].idShort).toBe('ComposedOfSet')
+    expect(relations.children![2].idShort).toBe('GeneralizedBySet')
   })
 
   it('respects custom idShort', () => {
@@ -321,10 +324,13 @@ describe('generateCapabilityTemplateStructure', () => {
     expect(inner[3].semanticId).toBe(CAPABILITY_SEMANTIC_IDS.CapabilityRelations)
   })
 
-  it('inner CapabilityRelations starts empty (ConstraintSet created on demand)', () => {
+  it('inner CapabilityRelations has ConstraintSet, ComposedOfSet, GeneralizedBySet', () => {
     const inner = generateCapabilityTemplateStructure()[0].children![0].children!
     const relations = inner[3]
-    expect(relations.children).toEqual([])
+    expect(relations.children).toHaveLength(3)
+    expect(relations.children![0].idShort).toBe('ConstraintSet')
+    expect(relations.children![1].idShort).toBe('ComposedOfSet')
+    expect(relations.children![2].idShort).toBe('GeneralizedBySet')
   })
 
   it('inner children match expected types', () => {

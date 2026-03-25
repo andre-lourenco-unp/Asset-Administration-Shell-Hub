@@ -298,7 +298,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Upload, Plus, HomeIcon, Sparkles, Moon, Sun, Monitor } from 'lucide-react'
+import { Upload, Plus, HomeIcon, Sparkles, Moon, Sun, Monitor, FileText, Search, Brain } from 'lucide-react'
 import { useTheme } from "next-themes"
 import { AASXVisualizer } from "@/components/aasx-visualizer"
 import { AASCreator } from "@/components/aas-creator"
@@ -313,6 +313,10 @@ import JSZip from "jszip"
 import { saveModels, loadModels, clearModels } from "@/lib/storage"
 import { downloadValidationReport } from "@/lib/pdf-report"
 import { ErrorBoundary } from "@/components/error-boundary"
+import { TemplatePicker } from "@/components/template-picker"
+import { EClassPicker } from "@/components/eclass-picker"
+import { AiImportWizard } from "@/components/ai-import/AiImportWizard"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 
 type ViewMode = "home" | "upload" | "visualizer" | "creator" | "editor"
 
@@ -329,6 +333,11 @@ export default function VisualizerPage() {
   const [recentFiles, setRecentFiles] = useState<number[]>([])
   const { theme, setTheme, resolvedTheme } = useTheme()
   const searchInputRef = useRef<HTMLInputElement>(null)
+  // Feature dialogs
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false)
+  const [eclassDialogOpen, setEclassDialogOpen] = useState(false)
+  const [eclassIrdi, setEclassIrdi] = useState('')
+  const [aiImportOpen, setAiImportOpen] = useState(false)
 
   // Load models from IndexedDB on mount
   useEffect(() => {
@@ -894,6 +903,33 @@ export default function VisualizerPage() {
               <HomeIcon className="w-4 h-4" />
               Home
             </button>
+            {/* Templates button */}
+            <button
+              onClick={() => setTemplatePickerOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-200 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+              title="IDTA Submodel Templates"
+            >
+              <FileText className="w-4 h-4" />
+              Templates
+            </button>
+            {/* eCLASS button */}
+            <button
+              onClick={() => setEclassDialogOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-200 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+              title="eCLASS Semantic ID Browser"
+            >
+              <Search className="w-4 h-4" />
+              eCLASS
+            </button>
+            {/* AI Import button */}
+            <button
+              onClick={() => setAiImportOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-200 bg-gradient-to-r from-violet-500 to-purple-600 text-white shadow-lg shadow-purple-500/30 hover:from-violet-600 hover:to-purple-700"
+              title="Import AAS from PDF using AI"
+            >
+              <Brain className="w-4 h-4" />
+              PDF → AAS
+            </button>
             {/* Theme Toggle */}
             <button
               onClick={cycleTheme}
@@ -953,6 +989,89 @@ export default function VisualizerPage() {
         )}
       </div>
       </div>
+
+      {/* ── Feature Dialogs ── */}
+
+      {/* Template Picker */}
+      <TemplatePicker
+        open={templatePickerOpen}
+        onOpenChange={setTemplatePickerOpen}
+        idPrefix="urn:mycompany"
+        onSelect={(submodel) => {
+          toast.success(`Template "${submodel.idShort}" ready — open the editor and add it to your AAS`)
+          console.log('[Templates] Selected submodel:', submodel)
+          setTemplatePickerOpen(false)
+        }}
+      />
+
+      {/* eCLASS Semantic ID Browser */}
+      <Dialog open={eclassDialogOpen} onOpenChange={setEclassDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>eCLASS Semantic ID Browser</DialogTitle>
+            <DialogDescription>
+              Search and select eCLASS properties to use as semantic IDs in your AAS elements.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <EClassPicker
+              value={eclassIrdi}
+              onChange={(irdi, prop) => {
+                setEclassIrdi(irdi)
+                if (prop) {
+                  toast.success(`Selected: ${prop.preferredName} (${prop.xsdType}${prop.unit ? ', ' + prop.unit : ''})`)
+                  console.log('[eCLASS] Selected property:', prop)
+                }
+              }}
+            />
+            {eclassIrdi && (
+              <div className="p-3 rounded-lg bg-muted text-xs font-mono break-all">
+                {eclassIrdi}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* AI Import Wizard */}
+      <AiImportWizard
+        open={aiImportOpen}
+        onOpenChange={setAiImportOpen}
+        onImport={(submodels, assetInfo) => {
+          const aasEntry = {
+            id: assetInfo.id,
+            idShort: assetInfo.idShort,
+            assetKind: 'Instance',
+            assetInformation: {
+              assetKind: 'Instance',
+              globalAssetId: assetInfo.id,
+            },
+            description: assetInfo.description
+              ? [{ language: 'en', text: assetInfo.description }]
+              : [],
+            administration: null,
+            derivedFrom: null,
+            embeddedDataSpecifications: [],
+            submodelRefs: submodels.map(sm => sm.id),
+            rawData: null,
+          }
+          const newEntry = {
+            file: `${assetInfo.idShort} (AI extracted)`,
+            type: 'JSON' as const,
+            valid: true,
+            errors: [],
+            processingTime: 0,
+            aasData: {
+              assetAdministrationShells: [aasEntry],
+              submodels,
+              conceptDescriptions: [],
+              rawData: null,
+            },
+          }
+          setUploadedFiles(prev => [...prev, newEntry])
+          toast.success(`Imported "${assetInfo.idShort}" with ${submodels.length} submodel(s)`)
+        }}
+      />
     </ErrorBoundary>
   )
 }

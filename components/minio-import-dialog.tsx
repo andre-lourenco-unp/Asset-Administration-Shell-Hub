@@ -46,7 +46,7 @@ export default function MinioImportDialog({ open, onOpenChange, onImport }: Mini
     setObjects([]);
     setSelected(new Set());
 
-    const stored = typeof window !== "undefined" ? localStorage.getItem("minioConfig") : null;
+    const stored = typeof window !== "undefined" ? sessionStorage.getItem("minioConfig") : null;
     if (!stored) {
       setLoading(false);
       setError("No MinIO configuration found. Please set up your MinIO account first.");

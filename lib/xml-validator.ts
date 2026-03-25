@@ -984,6 +984,16 @@ export async function validateXml(
   xml: string,
   xsd: string,
 ): Promise<{ valid: true } | { valid: false; errors: string[] }> {
+  // Security: reject files over 50MB
+  const MAX_XML_BYTES = 50 * 1024 * 1024;
+  if (xml.length > MAX_XML_BYTES) {
+    return { valid: false, errors: ['File exceeds maximum allowed size of 50MB'] };
+  }
+  // Security: basic entity bomb detection
+  const entityCount = (xml.match(/<!ENTITY/gi) || []).length;
+  if (entityCount > 10) {
+    return { valid: false, errors: ['XML contains suspicious number of entity declarations'] };
+  }
   const parameters = {
     xml: [{ fileName: "input.xml", contents: xml }],
     schema: [{ fileName: "schema.xsd", contents: xsd }],
@@ -1371,6 +1381,16 @@ export async function validateAASXXml(
 ): Promise<
   { valid: true; parsed: any; aasData?: ParsedAASData } | { valid: false; errors: (string | ValidationError)[]; parsed?: any; aasData?: ParsedAASData }
 > {
+  // Security: reject files over 50MB
+  const MAX_XML_BYTES = 50 * 1024 * 1024;
+  if (xml.length > MAX_XML_BYTES) {
+    return { valid: false, errors: ['File exceeds maximum allowed size of 50MB'] };
+  }
+  // Security: basic entity bomb detection
+  const entityCount = (xml.match(/<!ENTITY/gi) || []).length;
+  if (entityCount > 10) {
+    return { valid: false, errors: ['XML contains suspicious number of entity declarations'] };
+  }
   const isLegacy10 = /http:\/\/www\.admin-shell\.io\/aas\/1\/0/i.test(xml) || /<aas:aasenv/i.test(xml)
   const nsMatch = xml.match(/xmlns="https:\/\/admin-shell\.io\/aas\/(\d+)\/(\d+)"/i)
   const declaredMajor = nsMatch ? nsMatch[1] : null

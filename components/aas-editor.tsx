@@ -36,6 +36,10 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { fetchTemplates, fetchTemplateJson, isRateLimited, rateLimitResetSeconds } from "@/lib/github-templates"
+import { createPropertyConstraintContainer } from "@/lib/element-factory"
+import { EClassPicker } from "@/components/eclass-picker"
+import { SUBMODEL_TEMPLATES } from "@/lib/templates"
+import type { SubmodelTemplate as LocalSubmodelTemplate } from "@/lib/templates"
 
 // Add IEC 61360 data types list
 const IEC_DATA_TYPES = [
@@ -307,6 +311,16 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
 
   // Add a reentrancy guard ref if not present already
   const validationRunningRef = useRef(false);
+  // Tracks the XML content of the last auto-save so we only call onSave when something changed
+  const lastAutoSavedXmlRef = useRef<string | null>(null);
+
+  // Constraint editing form state
+  const [showConstraintForm, setShowConstraintForm] = useState(false);
+  const [constraintIdShort, setConstraintIdShort] = useState("");
+  const [constraintType, setConstraintType] = useState<"BasicConstraint" | "CustomConstraint" | "OCLConstraint" | "OperationConstraint">("BasicConstraint");
+  const [constraintValue, setConstraintValue] = useState("");
+  const [constraintConditionalType, setConstraintConditionalType] = useState("Precondition");
+  const [constraintTargetProperty, setConstraintTargetProperty] = useState("");
 
   // NEW: Add Element dialog state
   const [showAddElementDialog, setShowAddElementDialog] = useState(false);
@@ -1804,18 +1818,27 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
             </div>
           )}
 
-          {selectedElement.modelType === "AnnotatedRelationshipElement" && (
+          {(selectedElement.modelType === "RelationshipElement" || selectedElement.modelType === "AnnotatedRelationshipElement") && (
             <div className="space-y-3 text-sm text-gray-600 dark:text-gray-400">
-              <p className="font-medium">Annotated Relationship Element</p>
+              <p className="font-medium">{selectedElement.modelType === "AnnotatedRelationshipElement" ? "Annotated Relationship Element" : "Relationship Element"}</p>
               <div>
                 <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                   First (reference):
                 </label>
                 <input
                   type="text"
-                  value={typeof (selectedElement as any).first === 'string' ? (selectedElement as any).first : ''}
+                  value={(() => {
+                    const f = (selectedElement as any).first;
+                    if (typeof f === 'string') return f;
+                    if (f && typeof f === 'object' && Array.isArray(f.keys) && f.keys.length > 0) {
+                      const k = f.keys[0];
+                      return typeof k === 'string' ? k : (k?.value || '');
+                    }
+                    return '';
+                  })()}
                   onChange={(e) => {
-                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'first' as any, e.target.value || undefined)
+                    const val = e.target.value.trim();
+                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'first' as any, val ? { type: "ModelReference", keys: [{ type: "Referable", value: val }] } : { type: "ModelReference", keys: [] })
                   }}
                   placeholder="Reference to first element..."
                   className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-xs font-mono"
@@ -1827,17 +1850,28 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
                 </label>
                 <input
                   type="text"
-                  value={typeof (selectedElement as any).second === 'string' ? (selectedElement as any).second : ''}
+                  value={(() => {
+                    const s = (selectedElement as any).second;
+                    if (typeof s === 'string') return s;
+                    if (s && typeof s === 'object' && Array.isArray(s.keys) && s.keys.length > 0) {
+                      const k = s.keys[0];
+                      return typeof k === 'string' ? k : (k?.value || '');
+                    }
+                    return '';
+                  })()}
                   onChange={(e) => {
-                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'second' as any, e.target.value || undefined)
+                    const val = e.target.value.trim();
+                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'second' as any, val ? { type: "ModelReference", keys: [{ type: "Referable", value: val }] } : { type: "ModelReference", keys: [] })
                   }}
                   placeholder="Reference to second element..."
                   className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-xs font-mono"
                 />
               </div>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                Annotations are child elements — add them via the tree.
-              </p>
+              {selectedElement.modelType === "AnnotatedRelationshipElement" && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Annotations are child elements — add them via the tree.
+                </p>
+              )}
             </div>
           )}
 
@@ -1864,6 +1898,133 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
               </p>
             </div>
           )}
+
+          {/* Constraint editing for ConstraintSet SMC */}
+          {selectedElement.modelType === "SubmodelElementCollection" && selectedElement.idShort === "ConstraintSet" && (() => {
+            // Find sibling PropertySet to list available target properties
+            const parentPath = elementPath.slice(0, -1);
+            const findElements = (els: SubmodelElement[], path: string[]): SubmodelElement[] | null => {
+              if (path.length === 0) return els;
+              const [first, ...rest] = path;
+              const found = els.find(e => e.idShort === first);
+              if (!found || !found.children) return null;
+              return findElements(found.children, rest);
+            };
+            const siblings = findElements(submodelData[selectedSubmodel.idShort] || [], parentPath);
+            const propertySet = siblings?.find(s => s.idShort === 'PropertySet');
+            const propertyOptions: string[] = [];
+            if (propertySet?.children) {
+              for (const container of propertySet.children) {
+                // Each PropertyContainer has a child that is the actual property
+                if (container.children) {
+                  for (const child of container.children) {
+                    if (child.idShort) propertyOptions.push(child.idShort);
+                  }
+                } else if (container.idShort) {
+                  propertyOptions.push(container.idShort.replace(/Container$/, ''));
+                }
+              }
+            }
+            return (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Constraint Set</p>
+                  <button
+                    onClick={() => {
+                      setShowConstraintForm(!showConstraintForm);
+                      setConstraintIdShort("");
+                      setConstraintValue("");
+                      setConstraintTargetProperty(propertyOptions[0] || "");
+                    }}
+                    className="text-xs px-2 py-1 bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 rounded hover:bg-cyan-100 dark:hover:bg-cyan-900/50 border border-cyan-200 dark:border-cyan-700"
+                  >
+                    {showConstraintForm ? 'Cancel' : '+ Add Constraint'}
+                  </button>
+                </div>
+                {showConstraintForm && (
+                  <div className="space-y-2 bg-gray-50 dark:bg-gray-800 rounded-lg p-3 border border-gray-200 dark:border-gray-700">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Name (idShort):</label>
+                      <input type="text" value={constraintIdShort} onChange={(e) => setConstraintIdShort(e.target.value)}
+                        placeholder="e.g. MinPowerConstraint" className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Constraint Type:</label>
+                      <select value={constraintType} onChange={(e) => setConstraintType(e.target.value as any)}
+                        className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-sm">
+                        <option value="BasicConstraint">BasicConstraint</option>
+                        <option value="CustomConstraint">CustomConstraint</option>
+                        <option value="OCLConstraint">OCLConstraint</option>
+                        <option value="OperationConstraint">OperationConstraint</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Expression:</label>
+                      <input type="text" value={constraintValue} onChange={(e) => setConstraintValue(e.target.value)}
+                        placeholder="e.g. LaserPower >= 1000" className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-sm font-mono" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Conditional Type:</label>
+                      <select value={constraintConditionalType} onChange={(e) => setConstraintConditionalType(e.target.value)}
+                        className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-sm">
+                        <option value="Precondition">Precondition</option>
+                        <option value="Postcondition">Postcondition</option>
+                        <option value="Invariant">Invariant</option>
+                      </select>
+                    </div>
+                    {propertyOptions.length > 0 && (
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Target Property:</label>
+                        <select value={constraintTargetProperty} onChange={(e) => setConstraintTargetProperty(e.target.value)}
+                          className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-sm">
+                          {propertyOptions.map(p => <option key={p} value={p}>{p}</option>)}
+                        </select>
+                      </div>
+                    )}
+                    <button
+                      onClick={() => {
+                        if (!constraintIdShort.trim()) { toast.error("Please enter a constraint name"); return; }
+                        if (!constraintValue.trim()) { toast.error("Please enter a constraint expression"); return; }
+                        const newConstraint = createPropertyConstraintContainer({
+                          idShort: constraintIdShort.trim(),
+                          constraintType,
+                          value: constraintValue.trim(),
+                          conditionalType: constraintConditionalType,
+                          targetPropertyPath: constraintTargetProperty || "",
+                          constraintElementPath: constraintIdShort.trim(),
+                        });
+                        // Add constraint as child of ConstraintSet
+                        setSubmodelData((prev) => {
+                          const newData = { ...prev };
+                          const addToPath = (els: SubmodelElement[], path: string[]): SubmodelElement[] => {
+                            if (path.length === 0) return [...els, newConstraint as any];
+                            const [current, ...rest] = path;
+                            return els.map(el => {
+                              if (el.idShort === current) {
+                                if (rest.length === 0) return { ...el, children: [...(el.children || []), newConstraint as any] };
+                                return { ...el, children: addToPath(el.children || [], rest) };
+                              }
+                              return el;
+                            });
+                          };
+                          newData[selectedSubmodel.idShort] = addToPath(newData[selectedSubmodel.idShort] || [], elementPath);
+                          return newData;
+                        });
+                        setShowConstraintForm(false);
+                        toast.success(`Added constraint "${constraintIdShort}"`);
+                      }}
+                      className="w-full px-3 py-1.5 bg-cyan-600 text-white rounded text-sm hover:bg-cyan-700"
+                    >
+                      Add Constraint
+                    </button>
+                  </div>
+                )}
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {(selectedElement.children?.length || 0)} constraint(s) defined. Expand in tree to edit individual constraints.
+                </p>
+              </div>
+            );
+          })()}
 
           {selectedElement.modelType === "File" && (
             <div className="space-y-3">
@@ -2125,24 +2286,31 @@ export function AASEditor({ aasConfig, onBack, onFileGenerated, onUpdateAASConfi
           </div>
 
           <div className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-3">
-            <h4 className="text-xs font-semibold text-purple-800 dark:text-purple-300 uppercase">
+            <h4 className="text-xs font-semibold text-purple-800 dark:text-purple-300 uppercase mb-2">
               Semantic ID (ECLASS/IEC61360)
             </h4>
-            <input
-              type="text"
+            <EClassPicker
               value={typeof selectedElement.semanticId === 'string' ? selectedElement.semanticId : ''}
-              onChange={(e) => {
-                updateElementMetadata(selectedSubmodel.idShort, elementPath, 'semanticId', e.target.value)
+              onChange={(irdi, prop) => {
+                updateElementMetadata(selectedSubmodel.idShort, elementPath, 'semanticId', irdi)
+                // Auto-fill valueType and unit from eCLASS property when available
+                if (prop) {
+                  if (prop.xsdType && selectedElement.modelType === 'Property') {
+                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'valueType', prop.xsdType)
+                  }
+                  if (prop.unit) {
+                    updateElementMetadata(selectedSubmodel.idShort, elementPath, 'unit', prop.unit)
+                  }
+                }
               }}
               placeholder="0173-1#02-AAO677#002 or https://..."
-              className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-xs font-mono"
             />
             {typeof selectedElement.semanticId === 'string' && selectedElement.semanticId.startsWith('http') && (
               <a
                 href={selectedElement.semanticId}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline"
+                className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline mt-1 block"
               >
                 View specification →
               </a>
@@ -2385,34 +2553,52 @@ ${indent}  </embeddedDataSpecifications>
 ${indent}</conceptDescription>`;
     }).join('\n');
 
-    const submodelRefs = aasConfig.selectedSubmodels.map(sm => {
-      const smIdShortSan = sanitizeIdShortJson(sm.idShort);
-      // AAS 3.1: key elements must have type and value as child elements
-      return `        <reference>
+    // Build shell XML for each AAS shell (multi-AAS support)
+    const shells = aasConfig.shells && aasConfig.shells.length > 0
+      ? aasConfig.shells
+      : [{ idShort: aasConfig.idShort, id: aasConfig.id, assetKind: aasConfig.assetKind, globalAssetId: aasConfig.globalAssetId, submodelIds: aasConfig.selectedSubmodels.map(sm => `${aasConfig.id}/submodels/${sanitizeIdShortJson(sm.idShort)}`) }];
+
+    const shellsXml = shells.map(shell => {
+      // Find submodels belonging to this shell
+      const shellSubmodelRefs = aasConfig.selectedSubmodels
+        .filter(sm => {
+          const smId = sm.submodelId || `${aasConfig.id}/submodels/${sanitizeIdShortJson(sm.idShort)}`;
+          return shell.submodelIds.length === 0 || shell.submodelIds.includes(smId);
+        })
+        .map(sm => {
+          const smIdShortSan = sanitizeIdShortJson(sm.idShort);
+          const smId = sm.submodelId || `${aasConfig.id}/submodels/${smIdShortSan}`;
+          return `        <reference>
           <type>ModelReference</type>
           <keys>
             <key>
               <type>Submodel</type>
-              <value>${escapeXml(`${aasConfig.id}/submodels/${smIdShortSan}`)}</value>
+              <value>${escapeXml(smId)}</value>
             </key>
           </keys>
         </reference>`;
+        }).join('\n');
+
+      const shellAssetKind = normalizeAssetKind(shell.assetKind);
+      const shellGlobalAssetId = shell.globalAssetId || shell.idShort || "urn:placeholder";
+
+      return `    <assetAdministrationShell>
+      <idShort>${escapeXml(shell.idShort)}</idShort>
+      <id>${escapeXml(shell.id)}</id>
+      <assetInformation>
+        <assetKind>${shellAssetKind}</assetKind>
+        <globalAssetId>${escapeXml(shellGlobalAssetId)}</globalAssetId>
+      </assetInformation>
+      <submodels>
+${shellSubmodelRefs}
+      </submodels>
+    </assetAdministrationShell>`;
     }).join('\n');
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <environment xmlns="https://admin-shell.io/aas/3/1" xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <assetAdministrationShells>
-    <assetAdministrationShell>
-      <idShort>${escapeXml(aasConfig.idShort)}</idShort>
-      <id>${escapeXml(aasConfig.id)}</id>
-      <assetInformation>
-        <assetKind>${assetKindXmlVal}</assetKind>
-${globalAssetIdXml}${specificAssetIdsXml}${defaultThumbnailXml.trimEnd()}
-      </assetInformation>
-      <submodels>
-${submodelRefs}
-      </submodels>
-    </assetAdministrationShell>
+${shellsXml}
   </assetAdministrationShells>
   <submodels>
 ${submodelsXml}
@@ -2553,6 +2739,58 @@ ${conceptXml}
             value: valueRef
           };
         }
+        case "RelationshipElement":
+        case "AnnotatedRelationshipElement": {
+          const normalizeRef = (ref: any) => {
+            if (!ref || typeof ref !== 'object') return { type: "ModelReference", keys: [] };
+            return {
+              type: ref.type || "ModelReference",
+              keys: Array.isArray(ref.keys) ? ref.keys.map((k: any) => ({
+                type: (typeof k === 'object' && k !== null) ? (k.type || "Referable") : "Referable",
+                value: (typeof k === 'object' && k !== null) ? (k.value || "") : (typeof k === 'string' ? k : ""),
+              })) : [],
+            };
+          };
+          const result: any = {
+            ...base,
+            first: normalizeRef(element.first),
+            second: normalizeRef(element.second),
+          };
+          if (element.modelType === "AnnotatedRelationshipElement" && Array.isArray(element.children) && element.children.length > 0) {
+            result.annotations = element.children.map(mapElementToJson);
+          }
+          return result;
+        }
+        case "Range": {
+          const rangeVal = element.value as any;
+          return {
+            ...base,
+            valueType: prefixXs(element.valueType || "string"),
+            min: rangeVal?.min ?? "",
+            max: rangeVal?.max ?? "",
+          };
+        }
+        case "Entity": {
+          const entityResult: any = {
+            ...base,
+            entityType: (element as any).entityType || "CoManagedEntity",
+          };
+          if (Array.isArray(element.children) && element.children.length > 0) {
+            entityResult.statements = element.children.map(mapElementToJson);
+          }
+          return entityResult;
+        }
+        case "Capability":
+          // Qualifiers are already on base if present
+          if (Array.isArray(element.qualifiers) && element.qualifiers.length > 0) {
+            base.qualifiers = element.qualifiers.map((q: any) => ({
+              type: q.type,
+              valueType: q.valueType,
+              value: q.value,
+              ...(q.semanticId ? { semanticId: { type: "ExternalReference", keys: [{ type: "GlobalReference", value: q.semanticId }] } } : {}),
+            }));
+          }
+          return base;
         default:
           return base;
       }
@@ -2576,26 +2814,32 @@ ${conceptXml}
       };
     });
 
-    const shellIdShortSan = sanitizeIdShortJson(aasConfig.idShort || "");
-    const jsonShell = {
-      id: aasConfig.id,
-      idShort: shellIdShortSan,
-      assetInformation: {
-        assetKind: aasConfig.assetKind,
-        // AAS 3.1: globalAssetId is a simple string, not a reference with keys
-        globalAssetId: aasConfig.globalAssetId || sanitizeIdShortJson(aasConfig.idShort || ""),
-        ...(aasConfig.selectedSubmodels.length > 0 ? { specificAssetIds: [] } : {}),
-      },
-      submodels: jsonSubmodels.map(sm => ({
-        type: "ModelReference",
-        keys: [
-          {
-            type: "Submodel",
-            value: sm.id
-          }
-        ]
-      }))
-    };
+    // Build shells array (multi-AAS support)
+    const shells = aasConfig.shells && aasConfig.shells.length > 0
+      ? aasConfig.shells
+      : [{ idShort: aasConfig.idShort, id: aasConfig.id, assetKind: aasConfig.assetKind, globalAssetId: aasConfig.globalAssetId, submodelIds: jsonSubmodels.map(sm => sm.id) }];
+
+    const jsonShells = shells.map(shell => {
+      const shellSubmodelRefs = jsonSubmodels
+        .filter(sm => {
+          const smId = sm.id;
+          return shell.submodelIds.length === 0 || shell.submodelIds.includes(smId);
+        })
+        .map(sm => ({
+          type: "ModelReference",
+          keys: [{ type: "Submodel", value: sm.id }]
+        }));
+
+      return {
+        id: shell.id,
+        idShort: sanitizeIdShortJson(shell.idShort || ""),
+        assetInformation: {
+          assetKind: shell.assetKind || "Instance",
+          globalAssetId: shell.globalAssetId || shell.idShort || "urn:placeholder",
+        },
+        submodels: shellSubmodelRefs,
+      };
+    });
 
     const collectedConcepts: Record<string, any> = {};
     const collect = (els: any[]) => {
@@ -2641,7 +2885,7 @@ ${conceptXml}
     });
 
     return {
-      assetAdministrationShells: [jsonShell],
+      assetAdministrationShells: jsonShells,
       submodels: jsonSubmodels,
       conceptDescriptions: Object.values(collectedConcepts),
     };
@@ -2659,6 +2903,13 @@ ${conceptXml}
       typeKey === "file" ? "file" :
       typeKey === "referenceelement" ? "referenceElement" :
       typeKey === "capability" ? "capability" :
+      typeKey === "relationshipelement" ? "relationshipElement" :
+      typeKey === "annotatedrelationshipelement" ? "annotatedRelationshipElement" :
+      typeKey === "range" ? "range" :
+      typeKey === "entity" ? "entity" :
+      typeKey === "operation" ? "operation" :
+      typeKey === "basiceventelement" ? "basicEventElement" :
+      typeKey === "blob" ? "blob" :
       "property";
 
     const isReference = tagName === "referenceElement";
@@ -2912,6 +3163,61 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
       }
       xml += `${indent}    </keys>\n`;
       xml += `${indent}  </value>\n`;
+    } else if (tagName === "relationshipElement" || tagName === "annotatedRelationshipElement") {
+      // Serialize first and second references
+      const serializeRef = (ref: any, label: string): string => {
+        let refXml = `${indent}  <${label}>\n`;
+        if (ref && typeof ref === 'object' && Array.isArray(ref.keys) && ref.keys.length > 0) {
+          refXml += `${indent}    <type>${escapeXml(ref.type || "ModelReference")}</type>\n`;
+          refXml += `${indent}    <keys>\n`;
+          for (const k of ref.keys) {
+            const kType = (typeof k === 'object' && k !== null) ? (k.type || "Referable") : "Referable";
+            const kValue = (typeof k === 'object' && k !== null) ? (k.value || "") : (typeof k === 'string' ? k : "");
+            refXml += `${indent}      <key>\n`;
+            refXml += `${indent}        <type>${escapeXml(kType)}</type>\n`;
+            refXml += `${indent}        <value>${escapeXml(kValue)}</value>\n`;
+            refXml += `${indent}      </key>\n`;
+          }
+          refXml += `${indent}    </keys>\n`;
+        } else {
+          refXml += `${indent}    <type>ModelReference</type>\n`;
+          refXml += `${indent}    <keys/>\n`;
+        }
+        refXml += `${indent}  </${label}>\n`;
+        return refXml;
+      };
+      xml += serializeRef((element as any).first, "first");
+      xml += serializeRef((element as any).second, "second");
+      // AnnotatedRelationshipElement: annotations are child elements
+      if (tagName === "annotatedRelationshipElement") {
+        const kids = Array.isArray(element.children) ? element.children : [];
+        if (kids.length > 0) {
+          xml += `${indent}  <annotations>\n`;
+          for (const child of kids) {
+            xml += generateElementXml(child, indent + "    ");
+          }
+          xml += `${indent}  </annotations>\n`;
+        }
+      }
+    } else if (tagName === "range") {
+      const vt = normalizeValueType(element.valueType) || "xs:string";
+      xml += `${indent}  <valueType>${escapeXml(vt)}</valueType>\n`;
+      const rangeVal = element.value as any;
+      const minVal = rangeVal?.min ?? (typeof rangeVal === 'object' ? '' : '');
+      const maxVal = rangeVal?.max ?? (typeof rangeVal === 'object' ? '' : '');
+      xml += `${indent}  <min>${escapeXml(String(minVal))}</min>\n`;
+      xml += `${indent}  <max>${escapeXml(String(maxVal))}</max>\n`;
+    } else if (tagName === "entity") {
+      const entityType = (element as any).entityType || "CoManagedEntity";
+      xml += `${indent}  <entityType>${escapeXml(entityType)}</entityType>\n`;
+      const kids = Array.isArray(element.children) ? element.children : [];
+      if (kids.length > 0) {
+        xml += `${indent}  <statements>\n`;
+        for (const child of kids) {
+          xml += generateElementXml(child, indent + "    ");
+        }
+        xml += `${indent}  </statements>\n`;
+      }
     }
 
     xml += `${indent}</${tagName}>\n`;
@@ -3190,6 +3496,28 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
                 ...base,
                 value: Array.isArray(element.children) ? element.children.map(mapElementToJson) : [],
               };
+            case "RelationshipElement":
+            case "AnnotatedRelationshipElement": {
+              const normalizeRef = (ref: any) => {
+                if (!ref || typeof ref !== 'object') return { type: "ModelReference", keys: [] };
+                return {
+                  type: ref.type || "ModelReference",
+                  keys: Array.isArray(ref.keys) ? ref.keys.map((k: any) => ({
+                    type: (typeof k === 'object' && k !== null) ? (k.type || "Referable") : "Referable",
+                    value: (typeof k === 'object' && k !== null) ? (k.value || "") : (typeof k === 'string' ? k : ""),
+                  })) : [],
+                };
+              };
+              const relResult: any = {
+                ...base,
+                first: normalizeRef((element as any).first),
+                second: normalizeRef((element as any).second),
+              };
+              if (element.modelType === "AnnotatedRelationshipElement" && Array.isArray(element.children) && element.children.length > 0) {
+                relResult.annotations = element.children.map(mapElementToJson);
+              }
+              return relResult;
+            }
             default:
               return base;
           }
@@ -3212,23 +3540,29 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
           };
         });
 
-        const jsonShell = {
-          id: aasConfig.id,
-          idShort: aasConfig.idShort,
-          assetInformation: {
-            assetKind: aasConfig.assetKind,
-            // AAS 3.1: globalAssetId is a simple string
-            globalAssetId: aasConfig.globalAssetId || sanitizeIdShortJson(aasConfig.idShort || ""),
-            ...(aasConfig.selectedSubmodels.length > 0 ? { specificAssetIds: [] } : {}),
-          },
-          submodels: aasConfig.selectedSubmodels.map(sm => ({
-            type: "ModelReference",
-            keys: [{
-              type: "Submodel",
-              value: `${aasConfig.id}/submodels/${sm.idShort}`
-            }]
-          })),
-        };
+        // Build shells array (multi-AAS support)
+        const exportShells = aasConfig.shells && aasConfig.shells.length > 0
+          ? aasConfig.shells
+          : [{ idShort: aasConfig.idShort, id: aasConfig.id, assetKind: aasConfig.assetKind, globalAssetId: aasConfig.globalAssetId, submodelIds: jsonSubmodels.map(sm => sm.id) }];
+
+        const jsonShells = exportShells.map(shell => {
+          const shellSubmodelRefs = jsonSubmodels
+            .filter(sm => shell.submodelIds.length === 0 || shell.submodelIds.includes(sm.id))
+            .map(sm => ({
+              type: "ModelReference",
+              keys: [{ type: "Submodel", value: sm.id }]
+            }));
+
+          return {
+            id: shell.id,
+            idShort: shell.idShort,
+            assetInformation: {
+              assetKind: shell.assetKind || "Instance",
+              globalAssetId: shell.globalAssetId || shell.idShort || "urn:placeholder",
+            },
+            submodels: shellSubmodelRefs,
+          };
+        });
 
         // Build conceptDescriptions (compact IEC 61360 JSON)
         const jsonConceptDescriptions = Object.values(collectedConceptDescriptions).map(concept => {
@@ -3269,7 +3603,7 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
         });
 
         const jsonEnvironment = {
-          assetAdministrationShells: [jsonShell],
+          assetAdministrationShells: jsonShells,
           submodels: jsonSubmodels,
           conceptDescriptions: jsonConceptDescriptions
         };
@@ -3483,6 +3817,47 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
       valid: missingFields.length === 0,
       missingFields
     }
+  }
+
+  // Add a submodel from one of our built-in local IDTA templates (no GitHub fetch needed)
+  const addLocalTemplate = (localTemplate: LocalSubmodelTemplate) => {
+    const built = localTemplate.buildSubmodel(aasConfig.id || 'urn:example')
+    const idShort = built.idShort
+
+    // Map our template elements (which already use the editor's element shape) directly
+    const mapLocalElement = (el: any): any => {
+      const base: any = {
+        idShort: el.idShort,
+        modelType: el.modelType || 'Property',
+        cardinality: el.cardinality || 'ZeroToOne',
+        description: el.description ? (Array.isArray(el.description) ? el.description[0]?.text : el.description) : undefined,
+        semanticId: el.semanticId?.keys?.[0]?.value || el.semanticId || undefined,
+        valueType: el.valueType,
+        unit: el.unit,
+        value: el.value ?? '',
+      }
+      if (el.children) {
+        base.children = (el.children as any[]).map(mapLocalElement)
+      }
+      return base
+    }
+
+    const structure = ((built as any).submodelElements || []).map(mapLocalElement)
+
+    const syntheticGithubTemplate: SubmodelTemplate = {
+      name: built.idShort,
+      version: localTemplate.version,
+      description: localTemplate.description,
+      url: built.semanticId?.keys?.[0]?.value || `https://admin-shell.io/${built.idShort}`,
+    }
+
+    const newSubmodel: SelectedSubmodel = { template: syntheticGithubTemplate, idShort }
+    const newAASConfig = { ...aasConfig, selectedSubmodels: [...aasConfig.selectedSubmodels, newSubmodel] }
+    onUpdateAASConfig(newAASConfig)
+    setSubmodelData(prev => ({ ...prev, [idShort]: structure }))
+    setShowAddSubmodel(false)
+    setSelectedSubmodel(newSubmodel)
+    toast.success(`Added "${idShort}" submodel from IDTA template`)
   }
 
   const addSubmodel = async (template: SubmodelTemplate) => {
@@ -4027,7 +4402,10 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
 
       setHasValidated(true);
 
-      if (allGood && onSave) {
+      // Only auto-save when validation passes AND the XML content has actually changed
+      // since the last save — prevents duplicate entries from repeated validate clicks
+      if (allGood && onSave && xmlBuilt !== lastAutoSavedXmlRef.current) {
+        lastAutoSavedXmlRef.current = xmlBuilt;
         const resultToSave: ValidationResult = {
           file: `${aasConfig.idShort}.aasx`,
           type: "AASX",
@@ -4035,12 +4413,12 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
           processingTime: 0,
           parsed: xmlResult.parsed,
           aasData: xmlResult.aasData,
-          originalXml: xmlBuilt, // fixed XML bytes
+          originalXml: xmlBuilt,
           thumbnail: initialThumbnail || undefined,
           attachments: attachmentsState || attachments,
         };
         onSave(resultToSave);
-        toast.success("Model fixed and saved; it will show as valid on Home and export with the corrected XML.");
+        toast.success("Model saved — it will show as valid on Home and export with the corrected XML.");
       }
 
       // Auto-fix if all good
@@ -6518,6 +6896,52 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
 
             {/* Template List */}
             <div className="flex-1 overflow-y-auto p-4">
+              {/* ── Built-in IDTA Templates (local, no network) ── */}
+              {(() => {
+                const filteredLocal = SUBMODEL_TEMPLATES.filter(t =>
+                  !templateSearchQuery ||
+                  t.name.toLowerCase().includes(templateSearchQuery.toLowerCase()) ||
+                  t.idtaSpec.toLowerCase().includes(templateSearchQuery.toLowerCase())
+                )
+                if (filteredLocal.length === 0) return null
+                return (
+                  <div className="mb-5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide">Built-in</span>
+                      <span className="flex-1 h-px bg-emerald-200 dark:bg-emerald-800" />
+                      <span className="text-[10px] text-gray-400">No network required</span>
+                    </div>
+                    <div className="grid gap-2">
+                      {filteredLocal.map((t) => (
+                        <button
+                          key={t.id}
+                          onClick={() => addLocalTemplate(t)}
+                          className="w-full p-3 text-left rounded-xl border-2 border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 hover:border-emerald-400 hover:shadow-md transition-all duration-200 group"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-0.5">
+                                <span className="font-semibold text-sm text-gray-900 dark:text-white group-hover:text-emerald-700 dark:group-hover:text-emerald-400 transition-colors truncate">{t.name}</span>
+                                <span className="px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 text-[10px] rounded-full shrink-0">{t.idtaSpec}</span>
+                              </div>
+                              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{t.description}</p>
+                            </div>
+                            <span className="text-xs text-gray-400 shrink-0">v{t.version}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* ── GitHub / IDTA Remote Templates ── */}
+              {!templateSearchQuery && (
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">From IDTA GitHub</span>
+                  <span className="flex-1 h-px bg-blue-200 dark:bg-blue-800" />
+                </div>
+              )}
               {loadingTemplates ? (
                 <div className="flex flex-col items-center justify-center py-12">
                   <div className="relative">
@@ -6776,19 +7200,23 @@ ${indent}            </langStringShortNameTypeIec61360>\n`
                     </div>
                   )}
 
-                  {/* Semantic ID (optional) */}
+                  {/* Semantic ID (optional) — with eCLASS browser */}
                   <div>
                     <label className="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
                       Semantic ID
                       <span className="text-gray-400 text-xs">optional</span>
                     </label>
-                    <input
-                      type="text"
+                    <EClassPicker
                       value={newElementSemanticId}
-                      onChange={(e) => setNewElementSemanticId(e.target.value)}
-                      placeholder="e.g., https://admin-shell.io/..."
-                      className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800/50 text-gray-900 dark:text-white focus:outline-none focus:border-[#61caf3] focus:ring-4 focus:ring-[#61caf3]/20 placeholder:text-gray-400"
+                      onChange={(irdi, prop) => {
+                        setNewElementSemanticId(irdi)
+                        // Auto-fill valueType when an eCLASS property is selected
+                        if (prop?.xsdType) {
+                          setNewElementValueType(prop.xsdType)
+                        }
+                      }}
+                      placeholder="Search eCLASS or enter IRDI / URI..."
                     />
                   </div>
 

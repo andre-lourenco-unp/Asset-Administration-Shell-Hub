@@ -12,6 +12,10 @@ export const CAPABILITY_SEMANTIC_IDS = {
   PropertyConditionalType: 'https://admin-shell.io/idta/CapabilityDescription/PropertyConditionalType/1/0',
   ConstraintPropertyRelations: 'https://admin-shell.io/idta/CapabilityDescription/ConstraintPropertyRelations/1/0',
   ConstraintHasProperty: 'https://admin-shell.io/idta/CapabilityDescription/ConstraintHasProperty/1/0',
+  ComposedOfSet: 'https://admin-shell.io/idta/CapabilityDescription/ComposedOfSet/1/0',
+  GeneralizedBySet: 'https://admin-shell.io/idta/CapabilityDescription/GeneralizedBySet/1/0',
+  IsComposedOf: 'https://admin-shell.io/idta/CapabilityDescription/IsComposedOf/1/0',
+  IsGeneralizedBy: 'https://admin-shell.io/idta/CapabilityDescription/IsGeneralizedBy/1/0',
 } as const
 
 /** Qualifier structure for AAS elements */
@@ -69,6 +73,16 @@ export interface ParsedCapabilityConstraint {
   constrainedPropertyIdShort?: string
 }
 
+/** A reference from one capability to another (ComposedOf or GeneralizedBy) */
+export interface ParsedCapabilityRelation {
+  idShort: string
+  type: 'IsComposedOf' | 'IsGeneralizedBy'
+  /** The first element reference (source capability) */
+  firstValue?: string
+  /** The second element reference (target capability) */
+  secondValue?: string
+}
+
 export interface ParsedCapability {
   containerIdShort: string
   capabilityIdShort: string
@@ -76,6 +90,8 @@ export interface ParsedCapability {
   comment?: string
   properties: ParsedPropertyContainer[]
   constraints: ParsedCapabilityConstraint[]
+  composedOf: ParsedCapabilityRelation[]
+  generalizedBy: ParsedCapabilityRelation[]
   supplementalSemanticId?: string
 }
 

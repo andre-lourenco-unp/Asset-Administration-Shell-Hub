@@ -81,7 +81,7 @@ export default function MinioSendDialog({ open, onOpenChange, files, originals =
       return;
     }
 
-    const stored = typeof window !== "undefined" ? localStorage.getItem("minioConfig") : null;
+    const stored = typeof window !== "undefined" ? sessionStorage.getItem("minioConfig") : null;
     if (!stored) {
       toast.error("MinIO is not configured. Please set up MinIO first.");
       return;

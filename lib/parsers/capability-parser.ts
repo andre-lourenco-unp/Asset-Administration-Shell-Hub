@@ -3,6 +3,7 @@ import {
   type CapabilityRole,
   type ParsedCapability,
   type ParsedCapabilityConstraint,
+  type ParsedCapabilityRelation,
   type ParsedCapabilitySubmodel,
   type ParsedPropertyContainer,
   type ParsedPropertyValue,
@@ -250,6 +251,49 @@ function parseConstraints(relationsEl: Element): ParsedCapabilityConstraint[] {
   return result
 }
 
+function parseCapabilityRelations(
+  relationsEl: Element,
+  setName: string,
+  relationType: ParsedCapabilityRelation['type'],
+): ParsedCapabilityRelation[] {
+  const result: ParsedCapabilityRelation[] = []
+  const relValue = getLocalElement(relationsEl, 'value')
+  if (!relValue) return result
+
+  const relationSet = getLocalElements(relValue, 'submodelElementCollection')
+    .find(el => getIdShort(el) === setName)
+  if (!relationSet) return result
+
+  const setValue = getLocalElement(relationSet, 'value')
+  if (!setValue) return result
+
+  const relEls = getLocalElements(setValue, 'relationshipElement')
+  for (const rel of relEls) {
+    const idShort = getIdShort(rel)
+
+    const extractRefValue = (refName: string): string | undefined => {
+      const refEl = getLocalElement(rel, refName)
+      if (!refEl) return undefined
+      const keysEl = getLocalElement(refEl, 'keys')
+      if (!keysEl) return undefined
+      const allKeys = getLocalElements(keysEl, 'key')
+      if (allKeys.length > 0) {
+        return getTextContent(allKeys[allKeys.length - 1], 'value')
+      }
+      return undefined
+    }
+
+    result.push({
+      idShort,
+      type: relationType,
+      firstValue: extractRefValue('first'),
+      secondValue: extractRefValue('second'),
+    })
+  }
+
+  return result
+}
+
 function parseCapabilityContainer(containerEl: Element): ParsedCapability {
   const containerIdShort = getIdShort(containerEl)
   const valueWrapper = getLocalElement(containerEl, 'value')
@@ -259,6 +303,8 @@ function parseCapabilityContainer(containerEl: Element): ParsedCapability {
   let comment: string | undefined
   let properties: ParsedPropertyContainer[] = []
   let constraints: ParsedCapabilityConstraint[] = []
+  let composedOf: ParsedCapabilityRelation[] = []
+  let generalizedBy: ParsedCapabilityRelation[] = []
   let supplementalSemanticId: string | undefined
 
   if (valueWrapper) {
@@ -284,7 +330,7 @@ function parseCapabilityContainer(containerEl: Element): ParsedCapability {
       }
     }
 
-    // Find PropertySet
+    // Find PropertySet and CapabilityRelations
     const secs = getLocalElements(valueWrapper, 'submodelElementCollection')
     for (const sec of secs) {
       const secIdShort = getIdShort(sec)
@@ -292,6 +338,8 @@ function parseCapabilityContainer(containerEl: Element): ParsedCapability {
         properties = parsePropertyContainers(sec)
       } else if (secIdShort === 'CapabilityRelations') {
         constraints = parseConstraints(sec)
+        composedOf = parseCapabilityRelations(sec, 'ComposedOfSet', 'IsComposedOf')
+        generalizedBy = parseCapabilityRelations(sec, 'GeneralizedBySet', 'IsGeneralizedBy')
       }
     }
   }
@@ -303,6 +351,8 @@ function parseCapabilityContainer(containerEl: Element): ParsedCapability {
     ...(comment ? { comment } : {}),
     properties,
     constraints,
+    composedOf,
+    generalizedBy,
     ...(supplementalSemanticId ? { supplementalSemanticId } : {}),
   }
 }

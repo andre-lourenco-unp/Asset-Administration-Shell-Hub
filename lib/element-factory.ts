@@ -76,7 +76,20 @@ function capabilityInnerChildren(capabilityIdShort: string): SubmodelElement[] {
     {
       idShort: "CapabilityRelations", modelType: "SubmodelElementCollection", cardinality: "ZeroToOne",
       description: "Relations and constraints",
-      semanticId: CAPABILITY_SEMANTIC_IDS.CapabilityRelations, children: [],
+      semanticId: CAPABILITY_SEMANTIC_IDS.CapabilityRelations, children: [
+        {
+          idShort: "ConstraintSet", modelType: "SubmodelElementCollection", cardinality: "ZeroToOne",
+          semanticId: CAPABILITY_SEMANTIC_IDS.ConstraintSet, children: [],
+        },
+        {
+          idShort: "ComposedOfSet", modelType: "SubmodelElementCollection", cardinality: "ZeroToOne",
+          semanticId: CAPABILITY_SEMANTIC_IDS.ComposedOfSet, children: [],
+        },
+        {
+          idShort: "GeneralizedBySet", modelType: "SubmodelElementCollection", cardinality: "ZeroToOne",
+          semanticId: CAPABILITY_SEMANTIC_IDS.GeneralizedBySet, children: [],
+        },
+      ],
     },
   ]
 }
