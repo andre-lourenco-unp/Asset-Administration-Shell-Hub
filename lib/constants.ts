@@ -173,6 +173,37 @@ export function deriveValueTypeFromIEC(iec?: string): string | undefined {
 }
 
 /**
+ * Validate a string value against its declared XSD type
+ */
+export function isValidValueForXsdType(vt: string, val: string): boolean {
+  const v = (val ?? '').trim();
+  if (!v) return true; // empties handled by required checks
+  switch (vt) {
+    case 'xs:boolean': {
+      const lower = v.toLowerCase();
+      return lower === 'true' || lower === 'false' || v === '1' || v === '0';
+    }
+    case 'xs:integer':
+    case 'xs:int':
+    case 'xs:long':
+    case 'xs:short':
+    case 'xs:byte':
+      return /^-?\d+$/.test(v);
+    case 'xs:unsignedLong':
+    case 'xs:unsignedInt':
+    case 'xs:unsignedShort':
+    case 'xs:unsignedByte':
+      return /^\d+$/.test(v);
+    case 'xs:float':
+    case 'xs:double':
+    case 'xs:decimal':
+      return /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v);
+    default:
+      return true;
+  }
+}
+
+/**
  * Escape special XML characters
  */
 export function escapeXml(s?: string): string {

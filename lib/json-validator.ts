@@ -1,4 +1,80 @@
 import type { ValidationResult, ParsedAASData, ValidationError, AASInfo, SubmodelInfo } from "./types"
+import { normalizeValueType, deriveValueTypeFromIEC, isValidValueForXsdType } from "./constants"
+
+// Deep validation: checks required fields (cardinality) and value-type conformance
+// This matches the editor's validateAAS() logic so upload and editor agree
+export function validateDeep(data: any): ValidationError[] {
+  const errors: ValidationError[] = []
+
+  function walkElements(elements: any[], submodelIdShort: string, path: string[] = []) {
+    if (!Array.isArray(elements)) return
+    for (const el of elements) {
+      if (!el || typeof el !== 'object') continue
+      const idShort = el.idShort || 'Unknown'
+      const currentPath = [...path, idShort]
+      const breadcrumb = `${submodelIdShort} > ${currentPath.join(' > ')}`
+      const modelType = el.modelType || ''
+
+      // Value-type conformance for Property elements
+      if (modelType === 'Property') {
+        const vtNorm = normalizeValueType(el.valueType) || deriveValueTypeFromIEC(el.dataType)
+        if (vtNorm && typeof el.value === 'string' && el.value.trim() !== '') {
+          if (!isValidValueForXsdType(vtNorm, el.value)) {
+            errors.push({
+              path: breadcrumb,
+              message: `${breadcrumb} (value "${el.value}" doesn't match ${vtNorm})`,
+            })
+          }
+        }
+      }
+
+      // Required-field checks (cardinality "One" or "OneToMany")
+      const isRequired = el.cardinality === 'One' || el.cardinality === 'OneToMany'
+      if (isRequired) {
+        let hasValue = false
+        if (modelType === 'Property') {
+          hasValue = typeof el.value === 'string' && el.value.trim() !== ''
+        } else if (modelType === 'MultiLanguageProperty') {
+          if (Array.isArray(el.value)) {
+            hasValue = el.value.some((v: any) => v && typeof v === 'object' && v.text && v.text.trim() !== '')
+          } else if (el.value && typeof el.value === 'object') {
+            hasValue = Object.values(el.value as Record<string, string>).some(v => v && v.trim() !== '')
+          }
+        } else if (modelType === 'SubmodelElementCollection' || modelType === 'SubmodelElementList') {
+          const children = el.value || el.children || el.submodelElements
+          hasValue = Array.isArray(children) && children.length > 0
+        } else if (modelType === 'File') {
+          hasValue = typeof el.value === 'string' && el.value.trim() !== ''
+        }
+
+        if (!hasValue && ['Property', 'MultiLanguageProperty', 'SubmodelElementCollection', 'SubmodelElementList', 'File'].includes(modelType)) {
+          errors.push({
+            path: breadcrumb,
+            message: `${breadcrumb} is required but has no value`,
+          })
+        }
+      }
+
+      // Recurse into children (value array for SMC/SML, or submodelElements)
+      const children = el.value || el.children || el.submodelElements
+      if (Array.isArray(children) && (modelType === 'SubmodelElementCollection' || modelType === 'SubmodelElementList')) {
+        walkElements(children, submodelIdShort, currentPath)
+      }
+    }
+  }
+
+  const submodels = data.submodels || []
+  if (Array.isArray(submodels)) {
+    for (const sm of submodels) {
+      if (!sm || typeof sm !== 'object') continue
+      const smIdShort = sm.idShort || 'Unknown'
+      const elements = sm.submodelElements || []
+      walkElements(elements, smIdShort)
+    }
+  }
+
+  return errors
+}
 
 // Simple JSON structure validation for AAS format
 export function validateAASStructure(data: any): { valid: boolean; errors: ValidationError[] } {
@@ -254,7 +330,7 @@ export function parseSubmodelElements(elements: any[]): any[] {
 // Validates raw JSON string against AAS structure
 export async function validateAASXJson(
   jsonStr: string,
-): Promise<{ valid: true; parsed: any; aasData?: ParsedAASData } | { valid: false; errors: string[]; parsed?: any }> {
+): Promise<{ valid: true; parsed: any; aasData?: ParsedAASData } | { valid: false; errors: string[]; parsed?: any; aasData?: ParsedAASData }> {
   let parsedJson: any
 
   // Parse JSON
@@ -268,10 +344,23 @@ export async function validateAASXJson(
   try {
     const result = validateAASStructure(parsedJson)
 
-    if (result.valid) {
+    // Run deep validation (required fields + value type checks) on the raw data
+    const deepErrors = validateDeep(parsedJson)
+    if (deepErrors.length > 0) {
+      console.log(`[v0] Deep validation found ${deepErrors.length} issue(s):`, deepErrors)
+    }
+
+    if (result.valid && deepErrors.length === 0) {
       console.log("Parsed JSON Object:", parsedJson)
       const aasData = parseAASData(parsedJson)
       return { valid: true, parsed: parsedJson, aasData: aasData ?? undefined }
+    } else if (result.valid && deepErrors.length > 0) {
+      // Structure is fine but deep checks failed — still parse the data but report invalid
+      console.log("Parsed JSON Object:", parsedJson)
+      const aasData = parseAASData(parsedJson)
+      const errors = deepErrors.map((e) => e.message)
+      console.warn("JSON Deep Validation Errors:", errors)
+      return { valid: false, errors, parsed: parsedJson, aasData: aasData ?? undefined }
     } else {
       const errors = (result.errors || []).map((e) => `${e.path}: ${e.message}`)
       console.warn("JSON Validation Errors:", errors)
