@@ -264,6 +264,38 @@ export function isValidIdShort(idShort: string): boolean {
   return ID_SHORT_PATTERN.test(idShort.trim());
 }
 
+/**
+ * Check if a value string is valid for a given XSD value type.
+ * Empty values are always valid (handled by required-field checks elsewhere).
+ */
+export function isValidValueForXsdType(vt: string, val: string): boolean {
+  const v = (val ?? '').trim();
+  if (!v) return true; // empties handled by required checks
+  switch (vt) {
+    case 'xs:boolean': {
+      const lower = v.toLowerCase();
+      return lower === 'true' || lower === 'false' || v === '1' || v === '0';
+    }
+    case 'xs:integer':
+    case 'xs:int':
+    case 'xs:long':
+    case 'xs:short':
+    case 'xs:byte':
+      return /^-?\d+$/.test(v);
+    case 'xs:unsignedLong':
+    case 'xs:unsignedInt':
+    case 'xs:unsignedShort':
+    case 'xs:unsignedByte':
+      return /^\d+$/.test(v);
+    case 'xs:float':
+    case 'xs:double':
+    case 'xs:decimal':
+      return /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v);
+    default:
+      return true;
+  }
+}
+
 // URI validation pattern
 export const URI_PATTERN = /^(https?:\/\/|urn:|file:\/\/)/i;
 

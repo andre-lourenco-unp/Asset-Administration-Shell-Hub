@@ -40,119 +40,19 @@ import { createPropertyConstraintContainer } from "@/lib/element-factory"
 import { EClassPicker } from "@/components/eclass-picker"
 import { SUBMODEL_TEMPLATES } from "@/lib/templates"
 import type { SubmodelTemplate as LocalSubmodelTemplate } from "@/lib/templates"
+import {
+  IEC_DATA_TYPES,
+  XSD_VALUE_TYPES,
+  XSD_CANON_MAP,
+  AAS_NAMESPACE_3_1,
+  normalizeValueType,
+  escapeXml,
+  deriveValueTypeFromIEC,
+  isValidValueForXsdType,
+} from "@/lib/constants"
 
-// Add IEC 61360 data types list
-const IEC_DATA_TYPES = [
-  'DATE',
-  'STRING',
-  'STRING_TRANSLATABLE',
-  'INTEGER_MEASURE',
-  'INTEGER_COUNT',
-  'INTEGER_CURRENCY',
-  'REAL_MEASURE',
-  'REAL_COUNT',
-  'REAL_CURRENCY',
-  'BOOLEAN',
-  'IRI',
-  'IRDI',
-  'RATIONAL',
-  'RATIONAL_MEASURE',
-  'TIME',
-  'TIMESTAMP',
-  'FILE',
-  'HTML',
-  'BLOB',
-];
-
-const XSD_VALUE_TYPES = [
-  'xs:string','xs:boolean','xs:decimal','xs:integer','xs:long','xs:int','xs:short','xs:byte',
-  'xs:double','xs:float','xs:dateTime','xs:date','xs:time','xs:anyURI','xs:duration',
-  'xs:gYearMonth','xs:gYear','xs:gMonthDay','xs:gDay','xs:gMonth',
-  'xs:unsignedLong','xs:unsignedInt','xs:unsignedShort','xs:unsignedByte',
-  'xs:base64Binary','xs:hexBinary'
-];
-const XSD_CANON_MAP: Record<string, string> =
-  Object.fromEntries(XSD_VALUE_TYPES.map(t => [t.slice(3).toLowerCase(), t]));
-
-// AAS 3.1 namespace constant
-const ns31 = "https://admin-shell.io/aas/3/1";
-
-function normalizeValueType(t?: string): string | undefined {
-  if (!t) return undefined;
-  const s = t.trim();
-  if (!s) return undefined;
-  // Accept "xs:*" with any case, and plain names like "string"
-  const hasPrefix = s.slice(0,3).toLowerCase() === 'xs:';
-  const local = hasPrefix ? s.slice(3) : s;
-  const canonical = XSD_CANON_MAP[local.toLowerCase()];
-  return canonical || undefined;
-}
-
-// Escape special XML characters to avoid parser errors (&, <, >, quotes)
-function escapeXml(s?: string): string {
-  if (s == null) return "";
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-// SHARED HELPERS: make these available to both generateFinalAAS and validateAAS
-function deriveValueTypeFromIEC(iec?: string): string | undefined {
-  switch ((iec || '').toUpperCase()) {
-    case 'DATE': return 'xs:date';
-    case 'STRING': return 'xs:string';
-    case 'STRING_TRANSLATABLE': return 'xs:string';
-    case 'INTEGER_MEASURE':
-    case 'INTEGER_COUNT':
-    case 'INTEGER_CURRENCY': return 'xs:integer';
-    case 'REAL_MEASURE':
-    case 'REAL_COUNT':
-    case 'REAL_CURRENCY': return 'xs:decimal';
-    case 'BOOLEAN': return 'xs:boolean';
-    case 'IRI': return 'xs:anyURI';
-    case 'IRDI': return 'xs:string';
-    case 'RATIONAL':
-    case 'RATIONAL_MEASURE': return 'xs:string';
-    case 'TIME': return 'xs:time';
-    case 'TIMESTAMP': return 'xs:dateTime';
-    case 'FILE': return 'xs:string';
-    case 'HTML': return 'xs:string';
-    case 'BLOB': return 'xs:base64Binary';
-    default: return undefined;
-  }
-}
-
-function isValidValueForXsdType(vt: string, val: string): boolean {
-  const v = (val ?? '').trim();
-  if (!v) return true; // empties handled by required checks
-  switch (vt) {
-    case 'xs:boolean': {
-      const lower = v.toLowerCase();
-      // XML Schema boolean allows true/false and 1/0
-      return lower === 'true' || lower === 'false' || v === '1' || v === '0';
-    }
-    case 'xs:integer':
-    case 'xs:int':
-    case 'xs:long':
-    case 'xs:short':
-    case 'xs:byte':
-      return /^-?\d+$/.test(v);
-    case 'xs:unsignedLong':
-    case 'xs:unsignedInt':
-    case 'xs:unsignedShort':
-    case 'xs:unsignedByte':
-      return /^\d+$/.test(v);
-    case 'xs:float':
-    case 'xs:double':
-    case 'xs:decimal':
-      return /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v);
-    default:
-      return true;
-  }
-}
+// Use the centralized AAS 3.1 namespace constant
+const ns31 = AAS_NAMESPACE_3_1;
 
 interface SubmodelTemplate {
   name: string
